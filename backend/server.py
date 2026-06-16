@@ -1254,78 +1254,93 @@ async def list_audit_logs(
 
 
 # ===== REPORTS =====
-@api.get("/reports/{report_name}")
-async def reports(
-    report_name: str,
-    user: dict = Depends(get_current_user),
-):
-    docs: list = []
-    if report_name == "zero_level":
-        docs = await db.stock_entries.find({"status": "zero_level"}, {"_id": 0}).to_list(2000)
-    elif report_name == "critical_level":
-        docs = await db.stock_entries.find({"status": "critical_level"}, {"_id": 0}).to_list(2000)
-    elif report_name == "backorder":
-        docs = await db.stock_requests.find({"status": "backorder"}, {"_id": 0}).to_list(2000)
-    elif report_name == "open_requests":
-        docs = await db.stock_requests.find(
-            {"status": {"$in": ["pending_approval", "approved", "dispatched", "partially_received", "backorder"]}},
-            {"_id": 0}
-        ).to_list(2000)
-    elif report_name == "no_barcode":
-        docs = await db.items.find({"$or": [{"barcode": None}, {"barcode": ""}]}, {"_id": 0}).to_list(2000)
-    elif report_name == "life_saving":
-        items = await db.items.find({"is_life_saving": True}, {"_id": 0}).to_list(500)
-        item_ids = [i["id"] for i in items]
-        docs = await db.stock_entries.find(
-            {"item_id": {"$in": item_ids}, "status": {"$in": ["zero_level", "critical_level"]}},
-            {"_id": 0}
-        ).to_list(500)
-    else:
-        raise HTTPException(status_code=404, detail="Unknown report")
+from reports_data import REPORT_BUILDERS
+from reports_export import build_excel, build_pdf
 
-    # enrich
-    for d in docs:
-        if "item_id" in d:
-            d["item"] = await db.items.find_one({"id": d["item_id"]}, {"_id": 0})
-        if "department_id" in d:
-            d["department"] = await db.departments.find_one({"id": d["department_id"]}, {"_id": 0})
-    return {"report": report_name, "count": len(docs), "rows": docs}
+REPORT_TITLES = {
+    "zero_level":             "Zero Stock Items",
+    "critical_level":         "Critical Stock Items",
+    "life_saving":            "Life-Saving Items at Risk",
+    "backorder":              "Backorder Report",
+    "open_requests":          "Open Requests",
+    "data_quality":           "Data Quality Report",
+    "item_movement":          "Item Movement Report",
+    "department_performance": "Department Performance",
+    "monthly_management":     "Monthly Management Report",
+    "audit_trail":            "Audit Trail Report",
+}
+
+
+async def _build_report(report_name: str, user: dict) -> tuple:
+    builder = REPORT_BUILDERS.get(report_name)
+    if not builder:
+        raise HTTPException(status_code=404, detail="Unknown report")
+    return await builder(db, user)
+
+
+@api.get("/reports")
+async def list_reports(user: dict = Depends(get_current_user)):
+    """Return the catalogue of available reports."""
+    return [
+        {"key": k, "title": v}
+        for k, v in REPORT_TITLES.items()
+    ]
+
+
+@api.get("/reports/{report_name}")
+async def reports(report_name: str, user: dict = Depends(get_current_user)):
+    """Preview a report as JSON (headers + rows + metadata)."""
+    headers, rows, meta = await _build_report(report_name, user)
+    return {
+        "report": report_name,
+        "title": meta.get("title", REPORT_TITLES.get(report_name, report_name)),
+        "headers": headers,
+        "rows": rows,
+        "meta": meta,
+        "count": len(rows),
+    }
 
 
 @api.get("/reports/{report_name}/export.csv")
 async def export_report_csv(report_name: str, user: dict = Depends(get_current_user)):
-    data = await reports(report_name, user)
-    rows = data["rows"]
+    headers, rows, meta = await _build_report(report_name, user)
     buf = io.StringIO()
     writer = csv.writer(buf)
-    # Common header set
-    writer.writerow([
-        "department_code", "item_code", "item_name_ar", "item_name_en",
-        "balance", "status", "min_level", "critical_threshold", "last_updated_at",
-        "request_number", "requested_qty", "priority"
-    ])
+    writer.writerow(headers)
     for r in rows:
-        item = r.get("item") or {}
-        dept = r.get("department") or {}
-        writer.writerow([
-            dept.get("code", ""),
-            item.get("internal_code", ""),
-            item.get("name_ar", ""),
-            item.get("name_en", ""),
-            r.get("balance", ""),
-            r.get("status", ""),
-            item.get("min_level", ""),
-            item.get("critical_threshold", ""),
-            r.get("last_updated_at", ""),
-            r.get("request_number", ""),
-            r.get("requested_qty", ""),
-            r.get("priority", ""),
-        ])
+        writer.writerow(["" if v is None else v for v in r])
     buf.seek(0)
+    await write_audit(user, "export_csv", "reports", entity_id=report_name)
     return StreamingResponse(
         iter([buf.getvalue()]),
         media_type="text/csv",
         headers={"Content-Disposition": f"attachment; filename={report_name}.csv"},
+    )
+
+
+@api.get("/reports/{report_name}/export.xlsx")
+async def export_report_xlsx(report_name: str, user: dict = Depends(get_current_user)):
+    headers, rows, meta = await _build_report(report_name, user)
+    title = meta.get("title", REPORT_TITLES.get(report_name, report_name))
+    blob = build_excel(title, headers, rows, meta, sheet_name=title[:31])
+    await write_audit(user, "export_xlsx", "reports", entity_id=report_name)
+    return StreamingResponse(
+        iter([blob]),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={report_name}.xlsx"},
+    )
+
+
+@api.get("/reports/{report_name}/export.pdf")
+async def export_report_pdf(report_name: str, user: dict = Depends(get_current_user)):
+    headers, rows, meta = await _build_report(report_name, user)
+    title = meta.get("title", REPORT_TITLES.get(report_name, report_name))
+    blob = build_pdf(title, headers, rows, meta)
+    await write_audit(user, "export_pdf", "reports", entity_id=report_name)
+    return StreamingResponse(
+        iter([blob]),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename={report_name}.pdf"},
     )
 
 
