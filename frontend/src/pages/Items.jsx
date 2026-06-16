@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
-    Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogTrigger
+    Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogTrigger
 } from "@/components/ui/dialog";
 import {
     Select, SelectTrigger, SelectValue, SelectContent, SelectItem
@@ -112,6 +112,10 @@ export default function Items() {
                         <DialogContent className="max-w-2xl">
                             <DialogHeader>
                                 <DialogTitle>{editing ? "Edit Item" : "Add New Item"}</DialogTitle>
+                                <DialogDescription>
+                                    Define the item master record. Internal Code and Barcode are the
+                                    primary identifiers used during stock entry and Excel import matching.
+                                </DialogDescription>
                             </DialogHeader>
                             <div className="grid grid-cols-2 gap-3 max-h-[60vh] overflow-y-auto pr-1">
                                 <div>

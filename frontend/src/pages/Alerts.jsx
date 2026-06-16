@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
-    Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter
+    Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter
 } from "@/components/ui/dialog";
 import {
     Select, SelectTrigger, SelectValue, SelectContent, SelectItem
@@ -225,6 +225,10 @@ export default function Alerts() {
                 <DialogContent>
                     <DialogHeader>
                         <DialogTitle>Resolve Alert</DialogTitle>
+                        <DialogDescription>
+                            Add a brief note describing how this alert was resolved. The note is
+                            stored on the audit trail and visible on the alert card.
+                        </DialogDescription>
                     </DialogHeader>
                     {resolveDialog && (
                         <div className="space-y-3">

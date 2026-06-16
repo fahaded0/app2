@@ -578,8 +578,7 @@ async def approve_request(
     req = await db.stock_requests.find_one({"id": req_id})
     if not req:
         raise HTTPException(status_code=404, detail="Request not found")
-    if req["status"] != "pending_approval":
-        raise HTTPException(status_code=400, detail="Request is not pending approval")
+    validate_request_transition(req["status"], "approved")
     if user["role"] == "department_head" and user.get("department_id") != req["department_id"]:
         raise HTTPException(status_code=403, detail="You cannot approve a request from a different department")
     await db.stock_requests.update_one({"id": req_id}, {"$set": {
@@ -621,8 +620,7 @@ async def dispatch_request(
     req = await db.stock_requests.find_one({"id": req_id})
     if not req:
         raise HTTPException(status_code=404, detail="Request not found")
-    if req["status"] not in ("approved", "backorder"):
-        raise HTTPException(status_code=400, detail="Request must be approved first")
+    validate_request_transition(req["status"], "backorder" if body.backorder else "dispatched")
     target_state = "backorder" if body.backorder else "dispatched"
     validate_request_transition(req["status"], target_state)
 
@@ -663,8 +661,6 @@ async def receive_request(
         raise HTTPException(status_code=404, detail="Request not found")
     if user["role"] in ("department_head", "department_stock_officer") and user.get("department_id") != req["department_id"]:
         raise HTTPException(status_code=403, detail="You cannot receive for a different department")
-    if req["status"] not in ("dispatched", "partially_received"):
-        raise HTTPException(status_code=400, detail="Cannot receive in the current state")
 
     new_received = req["received_qty"] + body.received_qty
     if new_received >= req["dispatched_qty"]:
