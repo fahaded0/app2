@@ -9,6 +9,7 @@ import RoleGuard from "@/components/RoleGuard";
 import Login from "@/pages/Login";
 import Dashboard from "@/pages/Dashboard";
 import Items from "@/pages/Items";
+import ImportItems from "@/pages/ImportItems";
 import Stock from "@/pages/Stock";
 import Requests from "@/pages/Requests";
 import Alerts from "@/pages/Alerts";
@@ -16,6 +17,7 @@ import Reports from "@/pages/Reports";
 import AuditLog from "@/pages/AuditLog";
 import Users from "@/pages/Users";
 import Departments from "@/pages/Departments";
+import Settings from "@/pages/Settings";
 
 function ProtectedRoute({ children }) {
     const { user, ready } = useAuth();
@@ -46,10 +48,20 @@ function App() {
                     >
                         <Route path="/" element={<Dashboard />} />
                         <Route path="/items" element={<Items />} />
+                        <Route path="/items/import" element={
+                            <RoleGuard roles={["super_admin","digital_health_manager","supply_officer"]}>
+                                <ImportItems />
+                            </RoleGuard>
+                        } />
                         <Route path="/stock" element={<Stock />} />
                         <Route path="/requests" element={<Requests />} />
                         <Route path="/alerts" element={<Alerts />} />
                         <Route path="/reports" element={<Reports />} />
+                        <Route path="/settings" element={
+                            <RoleGuard roles={["super_admin","digital_health_manager","hospital_manager","auditor"]}>
+                                <Settings />
+                            </RoleGuard>
+                        } />
                         <Route path="/audit-logs" element={
                             <RoleGuard roles={["super_admin","digital_health_manager","auditor"]}>
                                 <AuditLog />

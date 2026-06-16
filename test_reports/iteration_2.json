@@ -1,0 +1,53 @@
+{
+  "summary": "Phase 2 backend + frontend regression complete. 20/20 pytest tests pass against deployed preview URL. Frontend Phase 2 features all wired: Operational Dashboard new KPIs, Alerts lifecycle (acknowledge/start/resolve+note/close + escalation trail), Settings page (6 SLA inputs + save/reset), Items dialog (UDI/GTIN/Reorder Qty/Lead Time), Import page (template/file/preview), and Access Denied screen for non-admin roles. SLA scheduler launched and produced escalation_level=2 entries on life-saving alerts.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "POST /api/requests/{id}/approve (double approve)",
+        "issue": "Approving an already-approved request returns 400 ('Request is not pending approval') instead of routing through validate_request_transition for a 409. Spec accepts 400 OR 409, but for consistency with other lifecycle transitions consider using validate_request_transition() like reject/dispatch/receive do."
+      },
+      {
+        "endpoint": "POST /api/requests/{id}/receive (illegal state)",
+        "issue": "When called on pending_approval, returns 400 ('Cannot receive in the current state') before reaching validate_request_transition(). Same recommendation — let the state machine raise the 409 uniformly."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Resolve dialog & Items dialog", "issues": ["React a11y warnings: 'Missing Description or aria-describedby for DialogContent'. Add DialogDescription or aria-describedby on shadcn DialogContent to silence and improve a11y."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase2.py",
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/phase2_results.xml"
+  ],
+  "action_items": [
+    "(Minor) Route the early 400 errors in approve_request() and receive_request() through validate_request_transition() so all illegal request transitions return 409 uniformly.",
+    "(Minor) Add aria-describedby / DialogDescription to the Resolve and Add-Item dialogs to clear React a11y warnings.",
+    "Phase-1 carry-over: brute-force lockout still uses email-only identifier — please confirm TestLockout passes after change (not re-run in this iteration; out of Phase 2 scope)."
+  ],
+  "critical_code_review_comments": [
+    "server.py approve_request() and receive_request() still hand-roll status checks with 400 instead of using the new state_machine.validate_request_transition for consistency.",
+    "server.py is ~1230 lines — recommend splitting into routers/auth.py, routers/requests.py, routers/alerts.py, routers/imports.py, routers/dashboard.py. Files >700 lines hurt maintainability.",
+    "dashboard_kpis() still does N+1 lookups (find_one per top_repeated and per recent_alert). With more items/depts this will get expensive — consider $lookup or batched fetch.",
+    "scheduler.py uses busy 60s × interval sleep — fine, but if scheduler_interval_minutes is changed, the next iteration won't pick the new value until the current sleep finishes. Acceptable for 15-min cadence.",
+    "excel_import.commit() builds new items with name_en==name_ar from the same Excel 'name' column. If the import is meant to be English-only, set name_ar=None or accept both columns separately."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase2.py (new — 20 Phase 2 tests)"
+  ],
+  "success_rate": {
+    "backend": "20/20 (100%) on Phase 2 suite. Phase 1 suite from iteration_1 still expected to pass (not re-run).",
+    "frontend": "~100% on Phase 2 — all lifecycle buttons, dialogs, KPIs, settings, items extended fields and import controls rendered; Access Denied screen verified for officer.er on /settings and /items/import."
+  },
+  "test_credentials": "From /app/memory/test_credentials.md — admin@medstock.sa/Admin@12345, head.er@medstock.sa/Head@12345, officer.er@medstock.sa/Officer@12345, supply@medstock.sa/Supply@12345, auditor@medstock.sa/Audit@12345.",
+  "seed_data_creation": "Pytest created TEST_PH2_A1 / TEST_PH2_A2 (via Excel import) and TEST_PH2_ITEM_EXT (extended-fields item). One stock_request marked TEST_phase2 was approved→rejected attempt; another TEST_phase2_receive remained pending. One alert was driven through acknowledge→start→resolve→close. Settings briefly toggled scheduler_interval_minutes to 30 then restored to 15.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Phase 2 test suite at /app/backend/tests/test_phase2.py. Required env: REACT_APP_BACKEND_URL must be set when running pytest (frontend/.env value). It also exercises the SLA settings PUT (toggles 30 then restores 15) and pushes one alert all the way to 'closed', which is fine for repeat runs (it creates a fresh alert if none open). approve→reject in TestRequestStateMachine now returns 409 ✓. Spec accepts double-approve at 400; if you want 409, refactor server.py approve_request and receive_request to use validate_request_transition().",
+  "rca_of_the_issue": "N/A — no breaking bugs uncovered in Phase 2. All endpoints, state machine, alert lifecycle, SLA settings, Excel import (preview/commit + template), scheduler and frontend wiring behave per spec."
+}

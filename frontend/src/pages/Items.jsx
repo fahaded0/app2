@@ -21,9 +21,10 @@ const CATEGORIES = ["Airway","PPE","Lab","IV","Wound Care","Equipment","Medicati
 const UNITS = ["PCS","BOX","KIT","VIAL","PACK"];
 
 const EMPTY = {
-    internal_code: "", barcode: "", udi: "", name_ar: "", name_en: "",
+    internal_code: "", barcode: "", udi: "", gtin: "", name_ar: "", name_en: "",
     category: "Other", unit: "PCS",
     min_level: 0, critical_threshold: 0, max_level: 0,
+    reorder_qty: 0, lead_time_days: 0, alternative_item_id: "",
     is_life_saving: false, is_crash_cart: false, requires_expiry: false,
     supplier: "", notes: "",
 };
@@ -71,8 +72,12 @@ export default function Items() {
                 min_level: Number(form.min_level) || 0,
                 critical_threshold: Number(form.critical_threshold) || 0,
                 max_level: Number(form.max_level) || 0,
+                reorder_qty: Number(form.reorder_qty) || 0,
+                lead_time_days: Number(form.lead_time_days) || 0,
+                alternative_item_id: form.alternative_item_id || null,
                 barcode: form.barcode || null,
                 udi: form.udi || null,
+                gtin: form.gtin || null,
                 supplier: form.supplier || null,
                 notes: form.notes || null,
             };
@@ -125,6 +130,10 @@ export default function Items() {
                                     <Input value={form.udi || ""} onChange={(e) => setForm({ ...form, udi: e.target.value })} />
                                 </div>
                                 <div>
+                                    <Label className="text-xs font-bold">GTIN</Label>
+                                    <Input value={form.gtin || ""} onChange={(e) => setForm({ ...form, gtin: e.target.value })} />
+                                </div>
+                                <div>
                                     <Label className="text-xs font-bold">Category</Label>
                                     <Select value={form.category} onValueChange={(v) => setForm({ ...form, category: v })}>
                                         <SelectTrigger><SelectValue /></SelectTrigger>
@@ -166,6 +175,16 @@ export default function Items() {
                                     <Label className="text-xs font-bold">Max Level</Label>
                                     <Input type="number" value={form.max_level}
                                            onChange={(e) => setForm({ ...form, max_level: e.target.value })} />
+                                </div>
+                                <div>
+                                    <Label className="text-xs font-bold">Reorder Qty</Label>
+                                    <Input type="number" value={form.reorder_qty}
+                                           onChange={(e) => setForm({ ...form, reorder_qty: e.target.value })} />
+                                </div>
+                                <div>
+                                    <Label className="text-xs font-bold">Lead Time (days)</Label>
+                                    <Input type="number" value={form.lead_time_days}
+                                           onChange={(e) => setForm({ ...form, lead_time_days: e.target.value })} />
                                 </div>
                                 <div className="col-span-2 grid grid-cols-3 gap-3 pt-2">
                                     <label className="flex items-center justify-between bg-slate-50 rounded-md p-2 border border-slate-200">

@@ -29,6 +29,10 @@ from auth import (
     register_failed_attempt,
     clear_failed_attempts,
 )
+from state_machine import validate_request_transition, validate_alert_transition
+from settings_store import get_settings, update_settings
+import scheduler as scheduler_mod
+import excel_import
 from models import (
     UserCreate, UserUpdate, LoginBody,
     DepartmentCreate, ItemCreate, ItemUpdate,
@@ -93,6 +97,45 @@ def _strip_mongo_id(doc: dict) -> dict:
         return None
     doc.pop("_id", None)
     return doc
+
+
+def _new_alert(
+    *, type: str, severity: str, title: str, message: str,
+    department_id=None, item_id=None, request_id=None,
+    escalated_to: str = None, escalation_level: int = 0,
+) -> dict:
+    """Build a fresh alert document with full lifecycle fields."""
+    escalations = []
+    if escalation_level > 0 and escalated_to:
+        escalations.append({
+            "level": escalation_level,
+            "at": _now_iso(),
+            "escalated_to": escalated_to,
+            "reason": "Created at escalation level",
+        })
+    return {
+        "id": _new_id(),
+        "type": type,
+        "severity": severity,
+        "status": "open",
+        "title": title,
+        "message": message,
+        "department_id": department_id,
+        "item_id": item_id,
+        "request_id": request_id,
+        "created_at": _now_iso(),
+        "escalation_level": escalation_level,
+        "escalations": escalations,
+        "escalated_to": escalated_to,
+        "sla_due_at": None,
+        # backwards-compat fields
+        "acknowledged": False,
+        "acknowledged_by": None, "acknowledged_at": None,
+        "in_progress_by": None, "in_progress_at": None,
+        "resolution_note": None,
+        "resolved_by": None, "resolved_at": None,
+        "closed_at": None,
+    }
 
 
 # ===== AUTH =====
@@ -399,62 +442,39 @@ async def upsert_stock(
     if new_status != previous_status:
         if new_status == "zero_level":
             sev = "critical" if item.get("is_life_saving") else "danger"
-            await db.alerts.insert_one({
-                "id": _new_id(),
-                "type": "zero_level",
-                "severity": sev,
-                "title": f"Zero stock — {item['name_ar']}",
-                "message": f"Balance in {dept['code']} reached zero",
-                "department_id": body.department_id,
-                "item_id": body.item_id,
-                "request_id": None,
-                "created_at": _now_iso(),
-                "acknowledged": False, "acknowledged_by": None, "acknowledged_at": None,
-            })
+            await db.alerts.insert_one(_new_alert(
+                type="zero_level", severity=sev,
+                title=f"Zero stock — {item['name_en']}",
+                message=f"Balance in {dept['code']} reached zero",
+                department_id=body.department_id, item_id=body.item_id,
+            ))
             if item.get("is_life_saving"):
-                await db.alerts.insert_one({
-                    "id": _new_id(),
-                    "type": "life_saving_item",
-                    "severity": "critical",
-                    "title": f"URGENT: Life-saving item out of stock — {item['name_ar']}",
-                    "message": f"Department: {dept['code']} — immediate action required",
-                    "department_id": body.department_id,
-                    "item_id": body.item_id,
-                    "request_id": None,
-                    "created_at": _now_iso(),
-                    "acknowledged": False, "acknowledged_by": None, "acknowledged_at": None,
-                })
+                await db.alerts.insert_one(_new_alert(
+                    type="life_saving_item", severity="critical",
+                    title=f"URGENT: Life-saving item out of stock — {item['name_en']}",
+                    message=f"Department: {dept['code']} — immediate action required",
+                    department_id=body.department_id, item_id=body.item_id,
+                    escalated_to="hospital_manager", escalation_level=1,
+                ))
         elif new_status == "critical_level":
-            await db.alerts.insert_one({
-                "id": _new_id(),
-                "type": "critical_level",
-                "severity": "warning",
-                "title": f"Critical stock — {item['name_ar']}",
-                "message": f"Balance in {dept['code']} = {body.balance} (critical threshold {item['critical_threshold']})",
-                "department_id": body.department_id,
-                "item_id": body.item_id,
-                "request_id": None,
-                "created_at": _now_iso(),
-                "acknowledged": False, "acknowledged_by": None, "acknowledged_at": None,
-            })
+            await db.alerts.insert_one(_new_alert(
+                type="critical_level", severity="warning",
+                title=f"Critical stock — {item['name_en']}",
+                message=f"Balance in {dept['code']} = {body.balance} (critical threshold {item['critical_threshold']})",
+                department_id=body.department_id, item_id=body.item_id,
+            ))
         elif new_status == "available" and previous_status in ("zero_level", "critical_level"):
             # Mark briefly as back_in_stock for visibility
             await db.stock_entries.update_one(
                 {"id": entry_id}, {"$set": {"status": "back_in_stock", "shortage_start": None}}
             )
             new_status = "back_in_stock"
-            await db.alerts.insert_one({
-                "id": _new_id(),
-                "type": "zero_level",  # informational reuse
-                "severity": "info",
-                "title": f"Item back in stock — {item['name_ar']}",
-                "message": f"Department: {dept['code']} — new balance {body.balance}",
-                "department_id": body.department_id,
-                "item_id": body.item_id,
-                "request_id": None,
-                "created_at": _now_iso(),
-                "acknowledged": False, "acknowledged_by": None, "acknowledged_at": None,
-            })
+            await db.alerts.insert_one(_new_alert(
+                type="zero_level", severity="info",
+                title=f"Item back in stock — {item['name_en']}",
+                message=f"Department: {dept['code']} — new balance {body.balance}",
+                department_id=body.department_id, item_id=body.item_id,
+            ))
 
     await write_audit(user, "upsert_stock", "stock_entries", entity_id=entry_id,
                       old_value={"balance": previous_balance, "status": previous_status},
@@ -581,6 +601,7 @@ async def reject_request(
     req = await db.stock_requests.find_one({"id": req_id})
     if not req:
         raise HTTPException(status_code=404, detail="Request not found")
+    validate_request_transition(req["status"], "rejected")
     await db.stock_requests.update_one({"id": req_id}, {"$set": {
         "status": "rejected",
         "rejected_reason": body.reason,
@@ -602,6 +623,8 @@ async def dispatch_request(
         raise HTTPException(status_code=404, detail="Request not found")
     if req["status"] not in ("approved", "backorder"):
         raise HTTPException(status_code=400, detail="Request must be approved first")
+    target_state = "backorder" if body.backorder else "dispatched"
+    validate_request_transition(req["status"], target_state)
 
     update = {
         "dispatched_qty": body.dispatched_qty,
@@ -613,18 +636,13 @@ async def dispatch_request(
         # Generate backorder alert
         item = await db.items.find_one({"id": req["item_id"]}, {"_id": 0})
         dept = await db.departments.find_one({"id": req["department_id"]}, {"_id": 0})
-        await db.alerts.insert_one({
-            "id": _new_id(),
-            "type": "backorder",
-            "severity": "critical" if item.get("is_life_saving") else "warning",
-            "title": f"Backorder - {item['name_ar']}",
-            "message": f"Request {req['request_number']} — Department {dept['code']}",
-            "department_id": req["department_id"],
-            "item_id": req["item_id"],
-            "request_id": req_id,
-            "created_at": _now_iso(),
-            "acknowledged": False, "acknowledged_by": None, "acknowledged_at": None,
-        })
+        await db.alerts.insert_one(_new_alert(
+            type="backorder",
+            severity="critical" if item.get("is_life_saving") else "warning",
+            title=f"Backorder - {item['name_en']}",
+            message=f"Request {req['request_number']} — Department {dept['code']}",
+            department_id=req["department_id"], item_id=req["item_id"], request_id=req_id,
+        ))
     else:
         update["status"] = "dispatched"
     await db.stock_requests.update_one({"id": req_id}, {"$set": update})
@@ -655,6 +673,7 @@ async def receive_request(
     else:
         new_status = "partially_received"
         closed = None
+    validate_request_transition(req["status"], new_status)
 
     update = {
         "received_qty": new_received,
@@ -703,12 +722,22 @@ async def receive_request(
 async def list_alerts(
     user: dict = Depends(get_current_user),
     acknowledged: Optional[bool] = None,
+    status: Optional[str] = None,
     severity: Optional[str] = None,
     limit: int = 200,
 ):
     q: dict = {}
-    if acknowledged is not None:
-        q["acknowledged"] = acknowledged
+    # New 'status' filter takes precedence; keep legacy 'acknowledged' bool for backward compat.
+    if status:
+        if status == "open":
+            q["status"] = {"$in": ["open", "acknowledged", "in_progress"]}
+        else:
+            q["status"] = status
+    elif acknowledged is not None:
+        if acknowledged is False:
+            q["status"] = {"$in": ["open", "acknowledged", "in_progress"]}
+        else:
+            q["status"] = {"$in": ["resolved", "closed"]}
     if severity:
         q["severity"] = severity
     docs = await db.alerts.find(q, {"_id": 0}).sort("created_at", -1).limit(limit).to_list(limit)
@@ -717,18 +746,173 @@ async def list_alerts(
             d["item"] = await db.items.find_one({"id": d["item_id"]}, {"_id": 0})
         if d.get("department_id"):
             d["department"] = await db.departments.find_one({"id": d["department_id"]}, {"_id": 0})
+        # Backfill lifecycle defaults for legacy alerts
+        d.setdefault("status", "acknowledged" if d.get("acknowledged") else "open")
+        d.setdefault("escalation_level", 0)
+        d.setdefault("escalations", [])
     return docs
 
 
 @api.post("/alerts/{alert_id}/acknowledge")
 async def acknowledge_alert(alert_id: str, request: Request, user: dict = Depends(get_current_user)):
+    alert = await db.alerts.find_one({"id": alert_id})
+    if not alert:
+        raise HTTPException(status_code=404, detail="Alert not found")
+    current = alert.get("status", "open")
+    validate_alert_transition(current, "acknowledged")
     await db.alerts.update_one({"id": alert_id}, {"$set": {
+        "status": "acknowledged",
         "acknowledged": True,
         "acknowledged_by": user["id"],
         "acknowledged_at": _now_iso(),
     }})
     await write_audit(user, "acknowledge_alert", "alerts", entity_id=alert_id, request=request)
     return {"status": "ok"}
+
+
+@api.post("/alerts/{alert_id}/start")
+async def start_alert(alert_id: str, request: Request, user: dict = Depends(get_current_user)):
+    alert = await db.alerts.find_one({"id": alert_id})
+    if not alert:
+        raise HTTPException(status_code=404, detail="Alert not found")
+    validate_alert_transition(alert.get("status", "open"), "in_progress")
+    await db.alerts.update_one({"id": alert_id}, {"$set": {
+        "status": "in_progress",
+        "in_progress_by": user["id"],
+        "in_progress_at": _now_iso(),
+    }})
+    await write_audit(user, "start_alert", "alerts", entity_id=alert_id, request=request)
+    return {"status": "ok"}
+
+
+class _ResolveBody(__import__("pydantic").BaseModel):
+    note: Optional[str] = None
+
+
+@api.post("/alerts/{alert_id}/resolve")
+async def resolve_alert(
+    alert_id: str, body: _ResolveBody, request: Request,
+    user: dict = Depends(get_current_user),
+):
+    alert = await db.alerts.find_one({"id": alert_id})
+    if not alert:
+        raise HTTPException(status_code=404, detail="Alert not found")
+    validate_alert_transition(alert.get("status", "open"), "resolved")
+    await db.alerts.update_one({"id": alert_id}, {"$set": {
+        "status": "resolved",
+        "resolution_note": body.note,
+        "resolved_by": user["id"],
+        "resolved_at": _now_iso(),
+    }})
+    await write_audit(user, "resolve_alert", "alerts", entity_id=alert_id,
+                      new_value={"note": body.note}, request=request)
+    return {"status": "ok"}
+
+
+@api.post("/alerts/{alert_id}/close")
+async def close_alert(
+    alert_id: str, request: Request,
+    user: dict = Depends(require_roles("super_admin", "digital_health_manager", "hospital_manager")),
+):
+    alert = await db.alerts.find_one({"id": alert_id})
+    if not alert:
+        raise HTTPException(status_code=404, detail="Alert not found")
+    validate_alert_transition(alert.get("status", "open"), "closed")
+    await db.alerts.update_one({"id": alert_id}, {"$set": {
+        "status": "closed",
+        "closed_at": _now_iso(),
+    }})
+    await write_audit(user, "close_alert", "alerts", entity_id=alert_id, request=request)
+    return {"status": "ok"}
+
+
+# ===== SETTINGS =====
+@api.get("/settings/sla")
+async def get_sla_settings(
+    user: dict = Depends(require_roles(
+        "super_admin", "digital_health_manager", "hospital_manager", "auditor"
+    )),
+):
+    return await get_settings(db)
+
+
+@api.put("/settings/sla")
+async def put_sla_settings(
+    payload: dict, request: Request,
+    user: dict = Depends(require_roles("super_admin", "digital_health_manager")),
+):
+    new = await update_settings(db, payload)
+    await write_audit(user, "update_sla", "settings", entity_id="alert_sla",
+                      new_value=new, request=request)
+    return new
+
+
+# ===== EXCEL IMPORT =====
+@api.post("/items/import/preview")
+async def items_import_preview(
+    request: Request,
+    user: dict = Depends(require_roles("super_admin", "digital_health_manager", "supply_officer")),
+):
+    body = await request.body()
+    # Accept either raw bytes or multipart-form; standard libs handle both transparently here.
+    # Strip multipart envelope if present.
+    if b"Content-Disposition" in body and b"\r\n\r\n" in body:
+        first = body.find(b"\r\n\r\n") + 4
+        end = body.rfind(b"\r\n--")
+        body = body[first:end if end != -1 else len(body)]
+    if not body:
+        raise HTTPException(status_code=400, detail="Empty file body")
+    try:
+        return await excel_import.analyse(db, body)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Cannot read workbook: {e}")
+
+
+@api.post("/items/import/commit")
+async def items_import_commit(
+    request: Request,
+    include_manual_review: bool = False,
+    user: dict = Depends(require_roles("super_admin", "digital_health_manager", "supply_officer")),
+):
+    body = await request.body()
+    if b"Content-Disposition" in body and b"\r\n\r\n" in body:
+        first = body.find(b"\r\n\r\n") + 4
+        end = body.rfind(b"\r\n--")
+        body = body[first:end if end != -1 else len(body)]
+    if not body:
+        raise HTTPException(status_code=400, detail="Empty file body")
+    try:
+        result = await excel_import.commit(db, body, user, include_manual_review=include_manual_review)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Import failed: {e}")
+    await write_audit(user, "import_excel", "items", new_value=result, request=request)
+    return result
+
+
+@api.get("/items/import/template.xlsx")
+async def items_import_template(
+    user: dict = Depends(require_roles("super_admin", "digital_health_manager", "supply_officer")),
+):
+    """Download an empty .xlsx template with the expected headers."""
+    from openpyxl import Workbook
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Items"
+    ws.append([
+        "internal_code", "barcode", "name", "category", "unit",
+        "min_level", "critical_threshold", "max_level",
+        "department_code", "balance",
+    ])
+    # Example row
+    ws.append(["ETT-CUFF-2", "8901234500021", "ETT W/ Cuff 2", "Airway", "PCS", 10, 5, 30, "ER", 8])
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=items_template.xlsx"},
+    )
 
 
 # ===== DASHBOARD =====
@@ -747,7 +931,9 @@ async def dashboard_kpis(user: dict = Depends(get_current_user)):
     pending_count = await db.stock_requests.count_documents({"status": "pending_approval"})
     dispatched_count = await db.stock_requests.count_documents({"status": "dispatched"})
 
-    open_alerts = await db.alerts.count_documents({"acknowledged": False})
+    open_alerts = await db.alerts.count_documents({
+        "status": {"$in": ["open", "acknowledged", "in_progress"]}
+    })
 
     # Life-saving items at risk
     life_saving_items = await db.items.find({"is_life_saving": True}, {"_id": 0, "id": 1}).to_list(500)
@@ -761,6 +947,80 @@ async def dashboard_kpis(user: dict = Depends(get_current_user)):
     # Not updated 24h+
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
     stale = await db.stock_entries.count_documents({**q_stock, "last_updated_at": {"$lt": cutoff}})
+
+    # ----- Operational KPIs (new) -----
+    total_stock = zero_count + crit_count + back_count + avail_count
+    availability_pct = round(((avail_count + back_count) / total_stock) * 100, 1) if total_stock else 100.0
+
+    no_barcode_count = await db.items.count_documents({
+        "$or": [{"barcode": None}, {"barcode": ""}],
+        "is_active": True,
+    })
+
+    # Request fulfillment rate (last 30 days)
+    cutoff_30 = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    total_reqs = await db.stock_requests.count_documents({"created_at": {"$gte": cutoff_30}})
+    fulfilled_reqs = await db.stock_requests.count_documents({
+        "created_at": {"$gte": cutoff_30},
+        "status": {"$in": ["received", "closed"]},
+    })
+    fulfillment_rate = round((fulfilled_reqs / total_reqs) * 100, 1) if total_reqs else 0.0
+
+    # Backorder aging buckets (in days)
+    backorder_docs = await db.stock_requests.find(
+        {"status": "backorder"}, {"_id": 0, "created_at": 1}
+    ).to_list(500)
+    aging = {"0-1d": 0, "1-2d": 0, "2-7d": 0, "7d+": 0}
+    now = datetime.now(timezone.utc)
+    for r in backorder_docs:
+        try:
+            dt = datetime.fromisoformat(r["created_at"].replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            days = (now - dt).total_seconds() / 86400
+            if days < 1:
+                aging["0-1d"] += 1
+            elif days < 2:
+                aging["1-2d"] += 1
+            elif days < 7:
+                aging["2-7d"] += 1
+            else:
+                aging["7d+"] += 1
+        except Exception:
+            pass
+
+    # Top repeated stockout items (count distinct stockout events from transactions)
+    pipeline_repeat = [
+        {"$match": {"status": {"$in": ["zero_level", "critical_level"]}}},
+        {"$group": {"_id": "$item_id", "events": {"$sum": 1}}},
+        {"$sort": {"events": -1}},
+        {"$limit": 5},
+    ]
+    repeat_raw = await db.stock_transactions.aggregate(pipeline_repeat).to_list(10)
+    top_repeated = []
+    for r in repeat_raw:
+        it = await db.items.find_one({"id": r["_id"]}, {"_id": 0})
+        if it:
+            top_repeated.append({"item": it, "events": r["events"]})
+
+    # Average days currently out of stock (shortage_start vs now)
+    shortages = await db.stock_entries.find(
+        {**q_stock, "status": {"$in": ["zero_level", "critical_level"]},
+         "shortage_start": {"$ne": None}},
+        {"_id": 0, "shortage_start": 1},
+    ).to_list(2000)
+    avg_days_out = 0.0
+    if shortages:
+        total_secs = 0.0
+        for s in shortages:
+            try:
+                dt = datetime.fromisoformat(s["shortage_start"].replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                total_secs += (now - dt).total_seconds()
+            except Exception:
+                pass
+        avg_days_out = round((total_secs / len(shortages)) / 86400, 1)
 
     # Top affected departments
     pipeline = [
@@ -811,6 +1071,13 @@ async def dashboard_kpis(user: dict = Depends(get_current_user)):
         "top_departments": top_departments,
         "recent_alerts": recent_alerts,
         "by_department": list(dept_status.values()),
+        # operational KPIs
+        "availability_pct": availability_pct,
+        "fulfillment_rate": fulfillment_rate,
+        "no_barcode_count": no_barcode_count,
+        "avg_days_out_of_stock": avg_days_out,
+        "backorder_aging": aging,
+        "top_repeated_stockouts": top_repeated,
     }
 
 
@@ -940,6 +1207,7 @@ async def startup():
     await db.stock_entries.create_index([("department_id", 1), ("item_id", 1)], unique=True)
     await db.stock_requests.create_index("request_number", unique=True)
     await db.alerts.create_index("created_at")
+    await db.alerts.create_index("status")
     await db.audit_logs.create_index("created_at")
     await db.login_attempts.create_index("identifier")
     try:
@@ -947,6 +1215,19 @@ async def startup():
         logger.info("Seed data ensured.")
     except Exception as e:
         logger.exception("Seed failed: %s", e)
+    # Migrate legacy alerts that pre-date the lifecycle schema
+    await db.alerts.update_many(
+        {"status": {"$exists": False}},
+        [{"$set": {
+            "status": {"$cond": [{"$eq": ["$acknowledged", True]}, "acknowledged", "open"]},
+            "escalation_level": 0,
+            "escalations": [],
+        }}],
+    )
+    # Launch SLA scheduler in background
+    import asyncio
+    app.state.scheduler_task = asyncio.create_task(scheduler_mod.scheduler_loop(db))
+    logger.info("SLA scheduler launched.")
 
 
 @app.on_event("shutdown")

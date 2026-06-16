@@ -2,7 +2,8 @@ import React from "react";
 import { NavLink, useNavigate, Outlet } from "react-router-dom";
 import {
     LayoutDashboard, Boxes, ClipboardList, Bell, FileText,
-    History, Users, Building2, LogOut, Stethoscope, Package, ShieldCheck
+    History, Users, Building2, LogOut, Stethoscope, Package, ShieldCheck,
+    FileSpreadsheet, Sliders
 } from "lucide-react";
 import { useAuth, hasRole } from "@/lib/auth";
 import { ROLE_LABELS } from "@/lib/api";
@@ -15,12 +16,16 @@ const NAV = [
       roles: ["super_admin","digital_health_manager","department_stock_officer","department_head","supply_officer","auditor","hospital_manager","quality"] },
     { to: "/items", label: "Items", icon: Boxes, testid: "nav-items",
       roles: null },
+    { to: "/items/import", label: "Excel Import", icon: FileSpreadsheet, testid: "nav-import",
+      roles: ["super_admin","digital_health_manager","supply_officer"] },
     { to: "/requests", label: "Requests", icon: ClipboardList, testid: "nav-requests",
       roles: null },
     { to: "/alerts", label: "Alerts", icon: Bell, testid: "nav-alerts",
       roles: null },
     { to: "/reports", label: "Reports", icon: FileText, testid: "nav-reports",
       roles: null },
+    { to: "/settings", label: "Settings", icon: Sliders, testid: "nav-settings",
+      roles: ["super_admin","digital_health_manager","hospital_manager","auditor"] },
     { to: "/audit-logs", label: "Audit Log", icon: History, testid: "nav-audit",
       roles: ["super_admin","digital_health_manager","auditor"] },
     { to: "/users", label: "Users", icon: Users, testid: "nav-users",

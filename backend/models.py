@@ -83,6 +83,7 @@ class Item(BaseModel):
     internal_code: str           # internal SKU
     barcode: Optional[str] = None
     udi: Optional[str] = None
+    gtin: Optional[str] = None
     name_ar: str
     name_en: str
     category: ItemCategory = "Other"
@@ -90,6 +91,9 @@ class Item(BaseModel):
     min_level: int = 0
     critical_threshold: int = 0
     max_level: int = 0
+    reorder_qty: int = 0
+    lead_time_days: int = 0
+    alternative_item_id: Optional[str] = None
     is_life_saving: bool = False
     is_crash_cart: bool = False
     requires_expiry: bool = False
@@ -103,6 +107,7 @@ class ItemCreate(BaseModel):
     internal_code: str
     barcode: Optional[str] = None
     udi: Optional[str] = None
+    gtin: Optional[str] = None
     name_ar: str
     name_en: str
     category: ItemCategory = "Other"
@@ -110,6 +115,9 @@ class ItemCreate(BaseModel):
     min_level: int = 0
     critical_threshold: int = 0
     max_level: int = 0
+    reorder_qty: int = 0
+    lead_time_days: int = 0
+    alternative_item_id: Optional[str] = None
     is_life_saving: bool = False
     is_crash_cart: bool = False
     requires_expiry: bool = False
@@ -119,6 +127,7 @@ class ItemCreate(BaseModel):
 class ItemUpdate(BaseModel):
     barcode: Optional[str] = None
     udi: Optional[str] = None
+    gtin: Optional[str] = None
     name_ar: Optional[str] = None
     name_en: Optional[str] = None
     category: Optional[ItemCategory] = None
@@ -126,6 +135,9 @@ class ItemUpdate(BaseModel):
     min_level: Optional[int] = None
     critical_threshold: Optional[int] = None
     max_level: Optional[int] = None
+    reorder_qty: Optional[int] = None
+    lead_time_days: Optional[int] = None
+    alternative_item_id: Optional[str] = None
     is_life_saving: Optional[bool] = None
     is_crash_cart: Optional[bool] = None
     requires_expiry: Optional[bool] = None
