@@ -1,56 +1,64 @@
-import { useEffect } from "react";
-import "@/App.css";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
-import axios from "axios";
-import { HOME } from "@/constants/testIds";
+import React from "react";
+import {
+    BrowserRouter, Routes, Route, Navigate, useLocation
+} from "react-router-dom";
+import { AuthProvider, useAuth } from "@/lib/auth";
+import { Toaster } from "@/components/ui/sonner";
+import Layout from "@/components/Layout";
+import Login from "@/pages/Login";
+import Dashboard from "@/pages/Dashboard";
+import Items from "@/pages/Items";
+import Stock from "@/pages/Stock";
+import Requests from "@/pages/Requests";
+import Alerts from "@/pages/Alerts";
+import Reports from "@/pages/Reports";
+import AuditLog from "@/pages/AuditLog";
+import Users from "@/pages/Users";
+import Departments from "@/pages/Departments";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-const API = `${BACKEND_URL}/api`;
-
-const Home = () => {
-  const helloWorldApi = async () => {
-    try {
-      const response = await axios.get(`${API}/`);
-      console.log(response.data.message);
-    } catch (e) {
-      console.error(e, `errored out requesting / api`);
+function ProtectedRoute({ children }) {
+    const { user, ready } = useAuth();
+    const location = useLocation();
+    if (!ready) {
+        return (
+            <div className="min-h-screen flex items-center justify-center text-slate-500">
+                جاري التحميل...
+            </div>
+        );
     }
-  };
-
-  useEffect(() => {
-    helloWorldApi();
-  }, []);
-
-  return (
-    <div>
-      <header className="App-header">
-        <a
-          data-testid={HOME.emergentLink}
-          className="App-link"
-          href="https://emergent.sh"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <img src="https://avatars.githubusercontent.com/in/1201222?s=120&u=2686cf91179bbafbc7a71bfbc43004cf9ae1acea&v=4" />
-        </a>
-        <p className="mt-5">Building something incredible ~!</p>
-      </header>
-    </div>
-  );
-};
+    if (!user) return <Navigate to="/login" state={{ from: location }} replace />;
+    return children;
+}
 
 function App() {
-  return (
-    <div className="App">
-      <BrowserRouter>
-        <Routes>
-          <Route path="/" element={<Home />}>
-            <Route index element={<Home />} />
-          </Route>
-        </Routes>
-      </BrowserRouter>
-    </div>
-  );
+    return (
+        <AuthProvider>
+            <BrowserRouter>
+                <Routes>
+                    <Route path="/login" element={<Login />} />
+                    <Route
+                        element={
+                            <ProtectedRoute>
+                                <Layout />
+                            </ProtectedRoute>
+                        }
+                    >
+                        <Route path="/" element={<Dashboard />} />
+                        <Route path="/items" element={<Items />} />
+                        <Route path="/stock" element={<Stock />} />
+                        <Route path="/requests" element={<Requests />} />
+                        <Route path="/alerts" element={<Alerts />} />
+                        <Route path="/reports" element={<Reports />} />
+                        <Route path="/audit-logs" element={<AuditLog />} />
+                        <Route path="/users" element={<Users />} />
+                        <Route path="/departments" element={<Departments />} />
+                    </Route>
+                    <Route path="*" element={<Navigate to="/" replace />} />
+                </Routes>
+            </BrowserRouter>
+            <Toaster position="top-center" richColors />
+        </AuthProvider>
+    );
 }
 
 export default App;

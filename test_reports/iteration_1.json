@@ -1,0 +1,65 @@
+{
+  "summary": "First iteration end-to-end testing of Critical Medical Stock Monitoring System. Backend pytest suite (25 tests) — 24/25 passing after one fix (User create 500 due to ObjectId). One real backend bug remains: brute-force lockout never triggers in the cluster because ingress upstream IPs vary per request. Frontend RTL/Arabic UI working: login, dashboard KPIs (with values 6/7/1/8/14), role-based sidebar (officer.er correctly hides admin items), items, stock filter with dept isolation, alerts, reports — all rendering and integrated with backend.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "POST /api/auth/login (brute force lockout)",
+        "issue": "5-failed-attempt lockout (429) never triggers in deployed env. Cause: identifier = f'{ip}:{email}' but request.client.host returns the immediate proxy upstream which varies per request inside K8s (observed 10.208.138.130 and 10.208.138.133 in same test). Each attempt is counted under a different identifier so attempts never reach FAIL_LIMIT. Suggested fix: use only the lowercased email as identifier, or parse X-Forwarded-For / X-Real-IP from headers."
+      },
+      {
+        "endpoint": "POST /api/users",
+        "issue": "Was returning 500 due to motor's insert_one mutating the dict with non-serializable ObjectId _id. FIXED by testing agent — added _strip_mongo_id(doc) before returning. Recommend applying the same pattern wherever an insert_one result is returned (already done in items/departments)."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "Logout flow",
+        "issue": "Test agent located the Arabic logout text ('تسجيل الخروج') on the page but a click via :has-text selector did not redirect to /login (URL remained /reports). The button may not have a stable data-testid (no [data-testid='logout-button'] found). Please add data-testid='logout-button' and verify the onClick handler clears localStorage and routes to /login.",
+        "selector": "no [data-testid='logout-button'] exposed",
+        "priority": "MEDIUM"
+      }
+    ],
+    "integration_issues": [
+      {
+        "flow": "officer.er navigating to /audit-logs",
+        "issue": "Backend correctly returns 403 (visible in console), but the page is not redirected away and there is no visible 'forbidden / لا تملك صلاحية' message — UI just shows empty layout. Consider redirect-to-/ or showing an Arabic forbidden message.",
+        "affected_selectors": ["/audit-logs route"]
+      }
+    ],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Fix brute-force lockout identifier: switch to using only the lowercased email (or trust X-Forwarded-For) so attempts behind the K8s ingress are correlated. Re-run TestLockout::test_lockout_after_5_fails to confirm.",
+    "Add data-testid='logout-button' to the logout control in Layout.jsx and ensure click clears localStorage.access_token + navigates to /login.",
+    "When a non-permitted user reaches /audit-logs, /users or /departments routes, render an Arabic 'forbidden' message or redirect to /.",
+    "Audit other POST endpoints that return inserted docs to confirm _id is stripped (departments and items already do)."
+  ],
+  "critical_code_review_comments": [
+    "auth.py check_lockout / register_failed_attempt: identifier uses request.client.host which behind ingress is the upstream pod IP and varies; lockout is effectively disabled. Use email-only or X-Forwarded-For.",
+    "server.py: motor's insert_one mutates the passed dict with an ObjectId _id. create_user was returning the dict without stripping, causing 500. Fixed. Same risk pattern exists for any future insert flows that return docs.",
+    "CORS: allow_origins=['*'] with allow_credentials=False is OK for Bearer flow but cookies (set in set_auth_cookies) won't actually be honored cross-origin. Either remove the cookie flow or set explicit allowed origins + allow_credentials=True.",
+    "/api/reports/{report_name}/export.csv calls reports(report_name, user) internally — works but tightly couples response shape; consider extracting a pure data-fetch helper.",
+    "Dashboard KPIs and Stock listing perform N+1 lookups (find_one per item / department). For larger datasets consider $lookup aggregation or bulk fetch + in-memory map."
+  ],
+  "updated_files": [
+    "/app/backend/server.py (added _strip_mongo_id(doc) in create_user before serialization)",
+    "/app/backend/tests/backend_test.py (new comprehensive pytest suite, 25 tests)"
+  ],
+  "success_rate": {
+    "backend": "24/25 passing after fix (96%). Remaining failure is the lockout test which exposes a real backend bug.",
+    "frontend": "~95% — login, RTL, dashboard, role-based nav, items, stock, alerts, reports all working end-to-end with backend. Only logout button click + officer's 403 UX needs improvement."
+  },
+  "test_credentials": "From /app/memory/test_credentials.md — admin@medstock.sa/Admin@12345, head.er@medstock.sa/Head@12345, officer.er@medstock.sa/Officer@12345, officer.icu@medstock.sa/Officer@12345, supply@medstock.sa/Supply@12345, auditor@medstock.sa/Audit@12345.",
+  "seed_data_creation": "Used seed data already auto-created on backend startup (5 departments, 12 items, 24 stock entries, sample users). Tests created a handful of TEST_-prefixed items/users plus a couple of demo stock_requests that flow through full lifecycle.",
+  "retest_needed": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend pytest file at /app/backend/tests/backend_test.py — uses Bearer tokens via REACT_APP_BACKEND_URL. After the agent fixes lockout identifier, re-run TestLockout::test_lockout_after_5_fails. Note that some tests mutate seeded stock (e.g. set GAUZE-4x4 ER to 0, CRICO-KIT ICU to 0). If you need pristine seed for repeat runs, drop those stock_entries first or change to a different item. Frontend: verify logout-button data-testid and forbidden-route UX after fix.",
+  "rca_of_the_issue": "1) User-create 500: motor's AsyncIOMotorCollection.insert_one mutates the supplied dict by adding the inserted ObjectId as _id. The handler then returned the dict directly via FastAPI's JSON encoder which cannot serialize ObjectId — produced 500 with TypeError(\"'ObjectId' object is not iterable\"). Mitigation: call _strip_mongo_id(doc) right after insert_one before returning. 2) Lockout failure: identifier is built as f'{request.client.host}:{email}', but inside the K8s ingress the upstream client.host varies per request (observed two IPs during a 6-attempt run), so attempts are spread across multiple Mongo docs and the counter never reaches FAIL_LIMIT=5. Mitigation: use the email alone as the lockout identifier, OR parse X-Forwarded-For/X-Real-IP header before falling back to request.client.host."
+}
