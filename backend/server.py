@@ -99,8 +99,8 @@ def _strip_mongo_id(doc: dict) -> dict:
 @api.post("/auth/login")
 async def login(body: LoginBody, request: Request, response: Response):
     email = body.email.lower().strip()
-    ip = request.client.host if request.client else "unknown"
-    identifier = f"{ip}:{email}"
+    # Use email alone as identifier since K8s ingress upstream IPs vary per request.
+    identifier = f"email:{email}"
 
     await check_lockout(db, identifier)
 

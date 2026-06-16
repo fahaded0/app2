@@ -5,6 +5,7 @@ import {
 import { AuthProvider, useAuth } from "@/lib/auth";
 import { Toaster } from "@/components/ui/sonner";
 import Layout from "@/components/Layout";
+import RoleGuard from "@/components/RoleGuard";
 import Login from "@/pages/Login";
 import Dashboard from "@/pages/Dashboard";
 import Items from "@/pages/Items";
@@ -49,9 +50,21 @@ function App() {
                         <Route path="/requests" element={<Requests />} />
                         <Route path="/alerts" element={<Alerts />} />
                         <Route path="/reports" element={<Reports />} />
-                        <Route path="/audit-logs" element={<AuditLog />} />
-                        <Route path="/users" element={<Users />} />
-                        <Route path="/departments" element={<Departments />} />
+                        <Route path="/audit-logs" element={
+                            <RoleGuard roles={["super_admin","digital_health_manager","auditor"]}>
+                                <AuditLog />
+                            </RoleGuard>
+                        } />
+                        <Route path="/users" element={
+                            <RoleGuard roles={["super_admin","digital_health_manager"]}>
+                                <Users />
+                            </RoleGuard>
+                        } />
+                        <Route path="/departments" element={
+                            <RoleGuard roles={["super_admin","digital_health_manager"]}>
+                                <Departments />
+                            </RoleGuard>
+                        } />
                     </Route>
                     <Route path="*" element={<Navigate to="/" replace />} />
                 </Routes>
