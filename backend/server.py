@@ -1077,6 +1077,166 @@ async def dashboard_kpis(user: dict = Depends(get_current_user)):
     }
 
 
+# ===== DASHBOARD DRILL-DOWN =====
+async def _enrich_stock(rows: list[dict]) -> list[dict]:
+    """Attach item + department to a list of stock_entries rows."""
+    items_map, depts_map = {}, {}
+    for r in rows:
+        if r["item_id"] not in items_map:
+            items_map[r["item_id"]] = await db.items.find_one({"id": r["item_id"]}, {"_id": 0})
+        if r["department_id"] not in depts_map:
+            depts_map[r["department_id"]] = await db.departments.find_one(
+                {"id": r["department_id"]}, {"_id": 0}
+            )
+        r["item"] = items_map[r["item_id"]]
+        r["department"] = depts_map[r["department_id"]]
+    return rows
+
+
+async def _enrich_requests(rows: list[dict]) -> list[dict]:
+    items_map, depts_map = {}, {}
+    for r in rows:
+        if r["item_id"] not in items_map:
+            items_map[r["item_id"]] = await db.items.find_one({"id": r["item_id"]}, {"_id": 0})
+        if r["department_id"] not in depts_map:
+            depts_map[r["department_id"]] = await db.departments.find_one(
+                {"id": r["department_id"]}, {"_id": 0}
+            )
+        r["item"] = items_map[r["item_id"]]
+        r["department"] = depts_map[r["department_id"]]
+    return rows
+
+
+_DRILL_TITLES = {
+    "zero":          "Zero Stock Items",
+    "critical":      "Critical Stock Items",
+    "back_in_stock": "Back-in-Stock Items",
+    "available":     "Available Items",
+    "backorder":     "Backorder Requests",
+    "pending":       "Pending Approval Requests",
+    "dispatched":    "Dispatched Requests",
+    "open_alerts":   "Open Alerts",
+    "life_saving":   "Life-Saving Items at Risk",
+    "stale":         "Stock Not Updated > 24h",
+    "no_barcode":    "Items Without Barcode",
+    "availability":  "Stock Availability Breakdown",
+    "fulfillment":   "Recent Request Fulfillment (30d)",
+    "avg_days_out":  "Active Shortages",
+}
+
+
+@api.get("/dashboard/drill/{metric}")
+async def dashboard_drill(metric: str, user: dict = Depends(get_current_user)):
+    """Return the underlying rows behind a dashboard KPI so the user can drill in."""
+    if metric not in _DRILL_TITLES:
+        raise HTTPException(status_code=404, detail="Unknown metric")
+
+    # Scope to user's department when applicable
+    q_stock: dict = {}
+    if user["role"] in ("department_stock_officer", "department_head") and user.get("department_id"):
+        q_stock["department_id"] = user["department_id"]
+
+    rows: list = []
+    kind = "stock"
+
+    if metric in ("zero", "critical", "back_in_stock", "available"):
+        status_key = {"zero": "zero_level", "critical": "critical_level",
+                      "back_in_stock": "back_in_stock", "available": "available"}[metric]
+        rows = await db.stock_entries.find(
+            {**q_stock, "status": status_key}, {"_id": 0}
+        ).sort("last_updated_at", -1).to_list(1000)
+        rows = await _enrich_stock(rows)
+    elif metric == "stale":
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+        rows = await db.stock_entries.find(
+            {**q_stock, "last_updated_at": {"$lt": cutoff}}, {"_id": 0}
+        ).sort("last_updated_at", 1).to_list(1000)
+        rows = await _enrich_stock(rows)
+    elif metric == "life_saving":
+        life_ids = [i["id"] for i in await db.items.find(
+            {"is_life_saving": True}, {"_id": 0, "id": 1}
+        ).to_list(500)]
+        rows = await db.stock_entries.find(
+            {**q_stock, "item_id": {"$in": life_ids},
+             "status": {"$in": ["zero_level", "critical_level"]}},
+            {"_id": 0},
+        ).to_list(500)
+        rows = await _enrich_stock(rows)
+    elif metric == "avg_days_out":
+        now = datetime.now(timezone.utc)
+        raw = await db.stock_entries.find(
+            {**q_stock, "status": {"$in": ["zero_level", "critical_level"]},
+             "shortage_start": {"$ne": None}},
+            {"_id": 0},
+        ).sort("shortage_start", 1).to_list(1000)
+        for r in raw:
+            try:
+                dt = datetime.fromisoformat(r["shortage_start"].replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                r["days_out"] = round((now - dt).total_seconds() / 86400, 1)
+            except Exception:
+                r["days_out"] = None
+        rows = await _enrich_stock(raw)
+    elif metric == "no_barcode":
+        kind = "item"
+        rows = await db.items.find(
+            {"$or": [{"barcode": None}, {"barcode": ""}], "is_active": True}, {"_id": 0}
+        ).to_list(1000)
+    elif metric in ("backorder", "pending", "dispatched"):
+        kind = "request"
+        status_key = {"backorder": "backorder", "pending": "pending_approval",
+                      "dispatched": "dispatched"}[metric]
+        rows = await db.stock_requests.find(
+            {"status": status_key}, {"_id": 0}
+        ).sort("created_at", -1).to_list(1000)
+        rows = await _enrich_requests(rows)
+    elif metric == "open_alerts":
+        kind = "alert"
+        rows = await db.alerts.find(
+            {"status": {"$in": ["open", "acknowledged", "in_progress"]}}, {"_id": 0}
+        ).sort("created_at", -1).limit(500).to_list(500)
+        for a in rows:
+            if a.get("item_id"):
+                a["item"] = await db.items.find_one({"id": a["item_id"]}, {"_id": 0})
+            if a.get("department_id"):
+                a["department"] = await db.departments.find_one(
+                    {"id": a["department_id"]}, {"_id": 0}
+                )
+    elif metric == "availability":
+        # Summary breakdown rather than a row list
+        pipeline = [
+            {"$group": {"_id": "$status", "count": {"$sum": 1}}},
+        ]
+        if q_stock:
+            pipeline = [{"$match": q_stock}] + pipeline
+        agg = await db.stock_entries.aggregate(pipeline).to_list(20)
+        return {
+            "metric": metric, "title": _DRILL_TITLES[metric], "kind": "summary",
+            "rows": [{"status": x["_id"], "count": x["count"]} for x in agg],
+        }
+    elif metric == "fulfillment":
+        kind = "summary"
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+        pipeline = [
+            {"$match": {"created_at": {"$gte": cutoff}}},
+            {"$group": {"_id": "$status", "count": {"$sum": 1}}},
+        ]
+        agg = await db.stock_requests.aggregate(pipeline).to_list(20)
+        return {
+            "metric": metric, "title": _DRILL_TITLES[metric], "kind": "summary",
+            "rows": [{"status": x["_id"], "count": x["count"]} for x in agg],
+        }
+
+    return {
+        "metric": metric,
+        "title": _DRILL_TITLES[metric],
+        "kind": kind,
+        "count": len(rows),
+        "rows": rows,
+    }
+
+
 # ===== AUDIT =====
 @api.get("/audit-logs")
 async def list_audit_logs(

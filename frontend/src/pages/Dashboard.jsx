@@ -11,10 +11,19 @@ import {
     BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
     ResponsiveContainer, Legend, PieChart, Pie, Cell
 } from "recharts";
+import KpiDetailDialog from "@/components/KpiDetailDialog";
 
-const KPI = ({ label, value, suffix, icon: Icon, color, sub, testid }) => (
-    <div className={`bg-white border rounded-xl p-5 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md ${color}`}
-         data-testid={testid}>
+const KPI = ({ label, value, suffix, icon: Icon, color, sub, testid, onClick, metric }) => (
+    <button
+        type="button"
+        onClick={onClick}
+        data-testid={testid}
+        data-metric={metric}
+        className={`text-left w-full bg-white border rounded-xl p-5 transition-all duration-200
+                    hover:-translate-y-0.5 hover:shadow-md hover:ring-2 hover:ring-sky-400/30
+                    focus:outline-none focus:ring-2 focus:ring-sky-500
+                    cursor-pointer ${color}`}
+    >
         <div className="flex items-start justify-between mb-3">
             <div className="text-xs font-bold tracking-wider uppercase text-slate-500">{label}</div>
             <Icon className="w-7 h-7 opacity-80" />
@@ -23,12 +32,13 @@ const KPI = ({ label, value, suffix, icon: Icon, color, sub, testid }) => (
             {value}{suffix && <span className="text-base font-bold text-slate-500 ml-1">{suffix}</span>}
         </div>
         {sub && <div className="mt-1 text-xs text-slate-500">{sub}</div>}
-    </div>
+    </button>
 );
 
 export default function Dashboard() {
     const [data, setData] = useState(null);
     const [loading, setLoading] = useState(true);
+    const [drillMetric, setDrillMetric] = useState(null);
 
     useEffect(() => {
         api.get("/dashboard/kpis")
@@ -78,42 +88,58 @@ export default function Dashboard() {
                 </div>
             </div>
 
+            <div className="text-xs text-slate-500 -mt-3">
+                Tip: click any tile to see the underlying records.
+            </div>
+
             {/* Hero risk KPIs */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                 <KPI label="Stock Availability" value={data.availability_pct} suffix="%" icon={PercentSquare}
                      color={`${data.availability_pct >= 90 ? "text-emerald-700 border-emerald-200 bg-emerald-50/40" :
                              data.availability_pct >= 70 ? "text-amber-700 border-amber-200 bg-amber-50/40" :
                              "text-red-700 border-red-200 bg-red-50/40"}`}
-                     sub="Available + Back-in-Stock / total" testid="kpi-availability" />
+                     sub="Available + Back-in-Stock / total" testid="kpi-availability"
+                     metric="availability" onClick={() => setDrillMetric("availability")} />
                 <KPI label="Life-Saving at Risk" value={data.life_saving_risk} icon={Heart}
                      color="text-pink-700 border-pink-200 bg-pink-50/40"
-                     sub="Zero or Critical" testid="kpi-lifesaving" />
+                     sub="Zero or Critical" testid="kpi-lifesaving"
+                     metric="life_saving" onClick={() => setDrillMetric("life_saving")} />
                 <KPI label="Open Alerts" value={data.open_alerts} icon={ShieldAlert}
                      color="text-orange-700 border-orange-200 bg-orange-50/40"
-                     sub="Open + Ack + In-Progress" testid="kpi-alerts" />
+                     sub="Open + Ack + In-Progress" testid="kpi-alerts"
+                     metric="open_alerts" onClick={() => setDrillMetric("open_alerts")} />
                 <KPI label="Avg Days Out of Stock" value={data.avg_days_out_of_stock} suffix="d" icon={Clock}
                      color="text-purple-700 border-purple-200 bg-purple-50/40"
-                     sub="Across active shortages" testid="kpi-avg-days-out" />
+                     sub="Across active shortages" testid="kpi-avg-days-out"
+                     metric="avg_days_out" onClick={() => setDrillMetric("avg_days_out")} />
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                 <KPI label="Zero Stock" value={data.zero_count} icon={AlertCircle}
-                     color="text-red-700 border-red-200 bg-red-50/40" testid="kpi-zero" />
+                     color="text-red-700 border-red-200 bg-red-50/40" testid="kpi-zero"
+                     metric="zero" onClick={() => setDrillMetric("zero")} />
                 <KPI label="Critical Stock" value={data.critical_count} icon={AlertTriangle}
-                     color="text-amber-700 border-amber-200 bg-amber-50/40" testid="kpi-critical" />
+                     color="text-amber-700 border-amber-200 bg-amber-50/40" testid="kpi-critical"
+                     metric="critical" onClick={() => setDrillMetric("critical")} />
                 <KPI label="Backorder" value={data.backorder_count} icon={Clock}
-                     color="text-purple-700 border-purple-200 bg-purple-50/40" testid="kpi-backorder" />
+                     color="text-purple-700 border-purple-200 bg-purple-50/40" testid="kpi-backorder"
+                     metric="backorder" onClick={() => setDrillMetric("backorder")} />
                 <KPI label="Fulfillment Rate (30d)" value={data.fulfillment_rate} suffix="%" icon={TrendingUp}
-                     color="text-teal-700 border-teal-200 bg-teal-50/40" testid="kpi-fulfillment" />
+                     color="text-teal-700 border-teal-200 bg-teal-50/40" testid="kpi-fulfillment"
+                     metric="fulfillment" onClick={() => setDrillMetric("fulfillment")} />
 
                 <KPI label="Pending Approval" value={data.pending_requests} icon={Activity}
-                     color="text-sky-700 border-sky-200 bg-sky-50/40" testid="kpi-pending" />
+                     color="text-sky-700 border-sky-200 bg-sky-50/40" testid="kpi-pending"
+                     metric="pending" onClick={() => setDrillMetric("pending")} />
                 <KPI label="Dispatched" value={data.dispatched_requests} icon={Package}
-                     color="text-indigo-700 border-indigo-200 bg-indigo-50/40" testid="kpi-dispatched" />
+                     color="text-indigo-700 border-indigo-200 bg-indigo-50/40" testid="kpi-dispatched"
+                     metric="dispatched" onClick={() => setDrillMetric("dispatched")} />
                 <KPI label="Stale (>24h)" value={data.stale_count} icon={TrendingUp}
-                     color="text-slate-700 border-slate-200" sub="Data quality" testid="kpi-stale" />
+                     color="text-slate-700 border-slate-200" sub="Data quality" testid="kpi-stale"
+                     metric="stale" onClick={() => setDrillMetric("stale")} />
                 <KPI label="Items without Barcode" value={data.no_barcode_count} icon={Barcode}
-                     color="text-slate-700 border-slate-200" sub="Data quality" testid="kpi-no-barcode" />
+                     color="text-slate-700 border-slate-200" sub="Data quality" testid="kpi-no-barcode"
+                     metric="no_barcode" onClick={() => setDrillMetric("no_barcode")} />
             </div>
 
             {/* Charts */}
@@ -287,6 +313,9 @@ export default function Dashboard() {
                     </CardContent>
                 </Card>
             </div>
+
+            {/* Drill-down detail dialog */}
+            <KpiDetailDialog metric={drillMetric} onClose={() => setDrillMetric(null)} />
         </div>
     );
 }
