@@ -7,7 +7,7 @@ load_dotenv(ROOT_DIR / ".env")
 import os
 import logging
 from datetime import datetime, timezone, timedelta
-from typing import Optional, List
+from typing import Optional
 
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response
 from fastapi.responses import StreamingResponse
@@ -836,6 +836,7 @@ async def reports(
     report_name: str,
     user: dict = Depends(get_current_user),
 ):
+    docs: list = []
     if report_name == "zero_level":
         docs = await db.stock_entries.find({"status": "zero_level"}, {"_id": 0}).to_list(2000)
     elif report_name == "critical_level":

@@ -1,7 +1,7 @@
 """JWT-based authentication helpers with RBAC support."""
 import os
 from datetime import datetime, timezone, timedelta
-from typing import Optional, Iterable
+from typing import Optional
 
 import bcrypt
 import jwt

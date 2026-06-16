@@ -1,6 +1,5 @@
 """Seed initial data: admin, departments, users, item master, sample stock."""
 import os
-from datetime import datetime, timezone
 from pathlib import Path
 
 from motor.motor_asyncio import AsyncIOMotorDatabase

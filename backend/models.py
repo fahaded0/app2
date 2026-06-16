@@ -1,8 +1,8 @@
 """Pydantic models for the Critical Medical Stock Monitoring System."""
 from __future__ import annotations
-from datetime import datetime, timezone
-from typing import Optional, List, Literal
+from typing import Optional, Literal
 import uuid
+from datetime import datetime, timezone
 from pydantic import BaseModel, Field, EmailStr, ConfigDict
 
 
