@@ -4,7 +4,7 @@ import { useAuth, hasRole } from "@/lib/auth";
 
 /**
  * Route-level role guard. If user lacks any of `roles`, shows a forbidden
- * Arabic message instead of letting the page mount (and produce 403s).
+ * message instead of letting the page mount (and produce 403s).
  */
 export default function RoleGuard({ roles, children }) {
     const { user } = useAuth();
@@ -18,11 +18,12 @@ export default function RoleGuard({ roles, children }) {
                     <ShieldX className="w-8 h-8 text-red-600" />
                 </div>
                 <h2 className="font-heading text-2xl font-black text-slate-900 mb-2">
-                    لا تملك صلاحية للوصول
+                    Access Denied
                 </h2>
                 <p className="text-sm text-slate-500 max-w-md">
-                    هذه الشاشة محجوزة لأدوار معينة فقط. إذا كنت تعتقد أن هذا خطأ،
-                    تواصل مع مدير النظام للحصول على الصلاحية المناسبة.
+                    This screen is reserved for specific roles. If you believe this is an
+                    error, please contact your system administrator to request the appropriate
+                    permission.
                 </p>
             </div>
         );

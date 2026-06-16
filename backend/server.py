@@ -107,10 +107,10 @@ async def login(body: LoginBody, request: Request, response: Response):
     user = await db.users.find_one({"email": email})
     if not user or not verify_password(body.password, user["password_hash"]):
         await register_failed_attempt(db, identifier)
-        raise HTTPException(status_code=401, detail="بيانات الدخول غير صحيحة")
+        raise HTTPException(status_code=401, detail="Invalid login credentials")
 
     if not user.get("is_active", True):
-        raise HTTPException(status_code=403, detail="الحساب معطل")
+        raise HTTPException(status_code=403, detail="Account is disabled")
 
     await clear_failed_attempts(db, identifier)
 
@@ -161,7 +161,7 @@ async def create_user(
 ):
     email = body.email.lower().strip()
     if await db.users.find_one({"email": email}):
-        raise HTTPException(status_code=400, detail="البريد الإلكتروني مسجل مسبقاً")
+        raise HTTPException(status_code=400, detail="Email is already registered")
     doc = {
         "id": _new_id(),
         "email": email,
@@ -188,7 +188,7 @@ async def update_user(
 ):
     existing = await db.users.find_one({"id": user_id})
     if not existing:
-        raise HTTPException(status_code=404, detail="المستخدم غير موجود")
+        raise HTTPException(status_code=404, detail="User not found")
     update = {k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None}
     if "password" in update:
         update["password_hash"] = hash_password(update.pop("password"))
@@ -213,7 +213,7 @@ async def create_department(
     user: dict = Depends(require_roles("super_admin", "digital_health_manager")),
 ):
     if await db.departments.find_one({"code": body.code}):
-        raise HTTPException(status_code=400, detail="رمز القسم مستخدم")
+        raise HTTPException(status_code=400, detail="Department code already in use")
     doc = {"id": _new_id(), **body.model_dump(), "created_at": _now_iso()}
     await db.departments.insert_one(doc)
     _strip_mongo_id(doc)
@@ -253,9 +253,9 @@ async def create_item(
     user: dict = Depends(require_roles("super_admin", "digital_health_manager", "supply_officer")),
 ):
     if await db.items.find_one({"internal_code": body.internal_code}):
-        raise HTTPException(status_code=400, detail="رمز الصنف الداخلي مستخدم")
+        raise HTTPException(status_code=400, detail="Internal item code already in use")
     if body.barcode and await db.items.find_one({"barcode": body.barcode}):
-        raise HTTPException(status_code=400, detail="الباركود مكرر")
+        raise HTTPException(status_code=400, detail="Barcode is duplicated")
     doc = {
         "id": _new_id(),
         **body.model_dump(),
@@ -279,7 +279,7 @@ async def update_item(
 ):
     existing = await db.items.find_one({"id": item_id})
     if not existing:
-        raise HTTPException(status_code=404, detail="الصنف غير موجود")
+        raise HTTPException(status_code=404, detail="Item not found")
     update = {k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None}
     update["updated_at"] = _now_iso()
     await db.items.update_one({"id": item_id}, {"$set": update})
@@ -342,14 +342,14 @@ async def upsert_stock(
 ):
     if user["role"] in ("department_stock_officer", "department_head"):
         if user.get("department_id") != body.department_id:
-            raise HTTPException(status_code=403, detail="لا يمكنك إدخال رصيد لقسم آخر")
+            raise HTTPException(status_code=403, detail="You cannot post stock for a different department")
 
     item = await db.items.find_one({"id": body.item_id})
     if not item:
-        raise HTTPException(status_code=404, detail="الصنف غير موجود")
+        raise HTTPException(status_code=404, detail="Item not found")
     dept = await db.departments.find_one({"id": body.department_id})
     if not dept:
-        raise HTTPException(status_code=404, detail="القسم غير موجود")
+        raise HTTPException(status_code=404, detail="Department not found")
 
     existing = await db.stock_entries.find_one({"department_id": body.department_id, "item_id": body.item_id})
     new_status = _calc_stock_status(body.balance, item["min_level"], item["critical_threshold"])
@@ -403,8 +403,8 @@ async def upsert_stock(
                 "id": _new_id(),
                 "type": "zero_level",
                 "severity": sev,
-                "title": f"صفر مخزون - {item['name_ar']}",
-                "message": f"الرصيد في {dept['code']} وصل إلى صفر",
+                "title": f"Zero stock — {item['name_ar']}",
+                "message": f"Balance in {dept['code']} reached zero",
                 "department_id": body.department_id,
                 "item_id": body.item_id,
                 "request_id": None,
@@ -416,8 +416,8 @@ async def upsert_stock(
                     "id": _new_id(),
                     "type": "life_saving_item",
                     "severity": "critical",
-                    "title": f"تنبيه فوري: صنف منقذ للحياة غير متوفر - {item['name_ar']}",
-                    "message": f"القسم: {dept['code']} - يلزم إجراء فوري",
+                    "title": f"URGENT: Life-saving item out of stock — {item['name_ar']}",
+                    "message": f"Department: {dept['code']} — immediate action required",
                     "department_id": body.department_id,
                     "item_id": body.item_id,
                     "request_id": None,
@@ -429,8 +429,8 @@ async def upsert_stock(
                 "id": _new_id(),
                 "type": "critical_level",
                 "severity": "warning",
-                "title": f"مخزون حرج - {item['name_ar']}",
-                "message": f"الرصيد في {dept['code']} = {body.balance} (الحد الحرج {item['critical_threshold']})",
+                "title": f"Critical stock — {item['name_ar']}",
+                "message": f"Balance in {dept['code']} = {body.balance} (critical threshold {item['critical_threshold']})",
                 "department_id": body.department_id,
                 "item_id": body.item_id,
                 "request_id": None,
@@ -447,8 +447,8 @@ async def upsert_stock(
                 "id": _new_id(),
                 "type": "zero_level",  # informational reuse
                 "severity": "info",
-                "title": f"عاد الصنف للمخزون - {item['name_ar']}",
-                "message": f"القسم: {dept['code']} - الرصيد الجديد {body.balance}",
+                "title": f"Item back in stock — {item['name_ar']}",
+                "message": f"Department: {dept['code']} — new balance {body.balance}",
                 "department_id": body.department_id,
                 "item_id": body.item_id,
                 "request_id": None,
@@ -515,13 +515,13 @@ async def create_request(
 ):
     if user["role"] in ("department_stock_officer", "department_head"):
         if user.get("department_id") != body.department_id:
-            raise HTTPException(status_code=403, detail="لا يمكنك رفع طلب لقسم آخر")
+            raise HTTPException(status_code=403, detail="You cannot submit a request for a different department")
 
     item = await db.items.find_one({"id": body.item_id})
     if not item:
-        raise HTTPException(status_code=404, detail="الصنف غير موجود")
+        raise HTTPException(status_code=404, detail="Item not found")
     if not await db.departments.find_one({"id": body.department_id}):
-        raise HTTPException(status_code=404, detail="القسم غير موجود")
+        raise HTTPException(status_code=404, detail="Department not found")
 
     req_num = await _gen_request_number()
     doc = {
@@ -557,11 +557,11 @@ async def approve_request(
 ):
     req = await db.stock_requests.find_one({"id": req_id})
     if not req:
-        raise HTTPException(status_code=404, detail="الطلب غير موجود")
+        raise HTTPException(status_code=404, detail="Request not found")
     if req["status"] != "pending_approval":
-        raise HTTPException(status_code=400, detail="الطلب ليس في حالة انتظار الاعتماد")
+        raise HTTPException(status_code=400, detail="Request is not pending approval")
     if user["role"] == "department_head" and user.get("department_id") != req["department_id"]:
-        raise HTTPException(status_code=403, detail="لا تستطيع اعتماد طلب من قسم آخر")
+        raise HTTPException(status_code=403, detail="You cannot approve a request from a different department")
     await db.stock_requests.update_one({"id": req_id}, {"$set": {
         "approved_qty": body.approved_qty,
         "approved_by": user["id"],
@@ -580,7 +580,7 @@ async def reject_request(
 ):
     req = await db.stock_requests.find_one({"id": req_id})
     if not req:
-        raise HTTPException(status_code=404, detail="الطلب غير موجود")
+        raise HTTPException(status_code=404, detail="Request not found")
     await db.stock_requests.update_one({"id": req_id}, {"$set": {
         "status": "rejected",
         "rejected_reason": body.reason,
@@ -599,9 +599,9 @@ async def dispatch_request(
 ):
     req = await db.stock_requests.find_one({"id": req_id})
     if not req:
-        raise HTTPException(status_code=404, detail="الطلب غير موجود")
+        raise HTTPException(status_code=404, detail="Request not found")
     if req["status"] not in ("approved", "backorder"):
-        raise HTTPException(status_code=400, detail="الطلب يجب أن يكون معتمداً")
+        raise HTTPException(status_code=400, detail="Request must be approved first")
 
     update = {
         "dispatched_qty": body.dispatched_qty,
@@ -618,7 +618,7 @@ async def dispatch_request(
             "type": "backorder",
             "severity": "critical" if item.get("is_life_saving") else "warning",
             "title": f"Backorder - {item['name_ar']}",
-            "message": f"الطلب {req['request_number']} - القسم {dept['code']}",
+            "message": f"Request {req['request_number']} — Department {dept['code']}",
             "department_id": req["department_id"],
             "item_id": req["item_id"],
             "request_id": req_id,
@@ -642,11 +642,11 @@ async def receive_request(
 ):
     req = await db.stock_requests.find_one({"id": req_id})
     if not req:
-        raise HTTPException(status_code=404, detail="الطلب غير موجود")
+        raise HTTPException(status_code=404, detail="Request not found")
     if user["role"] in ("department_head", "department_stock_officer") and user.get("department_id") != req["department_id"]:
-        raise HTTPException(status_code=403, detail="لا تستطيع الاستلام لقسم آخر")
+        raise HTTPException(status_code=403, detail="You cannot receive for a different department")
     if req["status"] not in ("dispatched", "partially_received"):
-        raise HTTPException(status_code=400, detail="لا يمكن الاستلام في الحالة الحالية")
+        raise HTTPException(status_code=400, detail="Cannot receive in the current state")
 
     new_received = req["received_qty"] + body.received_qty
     if new_received >= req["dispatched_qty"]:
@@ -690,7 +690,7 @@ async def receive_request(
             "user_id": user["id"],
             "user_name": user["full_name"],
             "created_at": _now_iso(),
-            "reason": f"استلام طلب {req['request_number']}",
+            "reason": f"Receipt for request {req['request_number']}",
         })
 
     await write_audit(user, "receive_request", "requests", entity_id=req_id,
@@ -858,7 +858,7 @@ async def reports(
             {"_id": 0}
         ).to_list(500)
     else:
-        raise HTTPException(status_code=404, detail="تقرير غير معروف")
+        raise HTTPException(status_code=404, detail="Unknown report")
 
     # enrich
     for d in docs:

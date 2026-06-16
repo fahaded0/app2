@@ -8,9 +8,10 @@ module.exports = {
     theme: {
         extend: {
             fontFamily: {
-                heading: ['Cairo', 'sans-serif'],
-                body: ['"IBM Plex Sans Arabic"', 'sans-serif'],
-                sans: ['"IBM Plex Sans Arabic"', 'sans-serif'],
+                heading: ['Inter', 'system-ui', 'sans-serif'],
+                body: ['Inter', 'system-ui', 'sans-serif'],
+                sans: ['Inter', 'system-ui', 'sans-serif'],
+                mono: ['"JetBrains Mono"', 'monospace'],
             },
             borderRadius: {
                 lg: 'var(--radius)',
@@ -57,19 +58,6 @@ module.exports = {
                     '3': 'hsl(var(--chart-3))',
                     '4': 'hsl(var(--chart-4))',
                     '5': 'hsl(var(--chart-5))',
-                },
-                // medical stock semantic colors
-                stock: {
-                    zero: '#DC2626',
-                    zeroBg: '#FEF2F2',
-                    critical: '#D97706',
-                    criticalBg: '#FFFBEB',
-                    backorder: '#9333EA',
-                    backorderBg: '#FAF5FF',
-                    available: '#0D9488',
-                    availableBg: '#F0FDFA',
-                    backInStock: '#2563EB',
-                    backInStockBg: '#EFF6FF',
                 },
             },
             keyframes: {

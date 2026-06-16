@@ -4,7 +4,7 @@
 
 html, body {
     margin: 0;
-    font-family: 'IBM Plex Sans Arabic', 'Cairo', sans-serif;
+    font-family: 'Inter', system-ui, sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     background: #F8FAFC;
@@ -12,23 +12,24 @@ html, body {
 }
 
 h1, h2, h3, h4, h5, h6, .font-heading {
-    font-family: 'Cairo', 'IBM Plex Sans Arabic', sans-serif;
-    letter-spacing: -0.01em;
+    font-family: 'Inter', system-ui, sans-serif;
+    letter-spacing: -0.02em;
+    font-feature-settings: "ss01", "cv11";
 }
 
-code {
-    font-family: source-code-pro, Menlo, Monaco, Consolas, "Courier New", monospace;
+code, .font-mono, [dir="ltr"] {
+    font-family: 'JetBrains Mono', source-code-pro, Menlo, Monaco, Consolas, monospace;
 }
 
 @layer base {
     :root {
-        --background: 210 40% 98%;          /* #F8FAFC */
-        --foreground: 222 47% 11%;           /* #0F172A */
+        --background: 210 40% 98%;
+        --foreground: 222 47% 11%;
         --card: 0 0% 100%;
         --card-foreground: 222 47% 11%;
         --popover: 0 0% 100%;
         --popover-foreground: 222 47% 11%;
-        --primary: 201 96% 32%;              /* #0284C7 sky-700-ish */
+        --primary: 201 96% 32%;
         --primary-foreground: 0 0% 100%;
         --secondary: 210 40% 96%;
         --secondary-foreground: 222 47% 11%;
@@ -57,7 +58,8 @@ code {
 
 /* Status pill base */
 .status-pill {
-    @apply inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-bold;
+    @apply inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-bold whitespace-nowrap;
+    letter-spacing: 0.01em;
 }
 .status-zero      { background:#FEF2F2; color:#B91C1C; border-color:#FCA5A5; }
 .status-critical  { background:#FFFBEB; color:#B45309; border-color:#FCD34D; }
@@ -73,7 +75,17 @@ code {
 .nav-link:hover { background:#1E293B; color:white; }
 .nav-link.active { background:#0284C7; color:white; }
 
-/* Dense table cells override (used with shadcn table) */
-.table-dense td, .table-dense th { @apply py-2 px-3; }
-
-[data-debug-wrapper="true"] { display: contents !important; }
+/* Dense / aligned table cells */
+.table-dense th,
+.table-dense td {
+    @apply py-2 px-3 align-middle text-left;
+}
+.table-dense th {
+    @apply text-xs font-bold uppercase tracking-wider text-slate-600 whitespace-nowrap;
+}
+.num-cell {
+    @apply font-mono tabular-nums text-right;
+}
+.code-cell {
+    @apply font-mono text-xs text-slate-700;
+}

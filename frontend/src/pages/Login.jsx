@@ -32,7 +32,27 @@ export default function Login() {
     }
 
     return (
-        <div className="min-h-screen flex bg-slate-50" dir="rtl">
+        <div className="min-h-screen flex bg-slate-50">
+            {/* Left side - image panel */}
+            <div className="hidden lg:block w-1/2 relative overflow-hidden">
+                <img
+                    src="https://images.unsplash.com/photo-1586773860418-d37222d8fce3?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NTJ8MHwxfHNlYXJjaHwxfHxtb2Rlcm4lMjBob3NwaXRhbCUyMGJ1aWxkaW5nJTIwZXh0ZXJpb3J8ZW58MHx8fHwxNzgxNjIwMDAzfDA&ixlib=rb-4.1.0&q=85"
+                    alt="hospital"
+                    className="absolute inset-0 w-full h-full object-cover"
+                />
+                <div className="absolute inset-0 bg-gradient-to-b from-slate-900/50 to-sky-900/70" />
+                <div className="absolute inset-0 flex flex-col justify-end p-10 text-white">
+                    <h2 className="font-heading text-3xl font-black leading-tight mb-3">
+                        From spreadsheet to real-time operational system
+                    </h2>
+                    <p className="text-sm text-slate-100/90 leading-relaxed max-w-md">
+                        Track zero-stock, critical-stock, and backorder items across every
+                        department with automated alerts, escalation, and a full audit trail to
+                        protect patient safety.
+                    </p>
+                </div>
+            </div>
+
             {/* Right side - form */}
             <div className="flex-1 flex items-center justify-center p-6">
                 <div className="w-full max-w-md">
@@ -41,26 +61,26 @@ export default function Login() {
                             <Stethoscope className="w-7 h-7 text-white" />
                         </div>
                         <div>
-                            <h1 className="font-heading font-bold text-xl text-slate-900">
-                                نظام إدارة المخزون الطبي الحرج
+                            <h1 className="font-heading font-bold text-xl text-slate-900 leading-tight">
+                                Critical Medical Stock
                             </h1>
-                            <p className="text-xs text-slate-500">Critical Medical Stock Monitoring & Alerting</p>
+                            <p className="text-xs text-slate-500">Monitoring &amp; Alerting System</p>
                         </div>
                     </div>
 
                     <div className="bg-white border border-slate-200 rounded-xl p-8 shadow-sm">
-                        <h2 className="font-heading text-2xl font-bold mb-2">تسجيل الدخول</h2>
-                        <p className="text-sm text-slate-500 mb-6">يرجى استخدام البيانات المعتمدة للنفاذ إلى النظام</p>
+                        <h2 className="font-heading text-2xl font-bold mb-2">Sign in</h2>
+                        <p className="text-sm text-slate-500 mb-6">Use your authorised credentials to access the system.</p>
 
                         <form onSubmit={onSubmit} className="space-y-4">
                             <div>
-                                <Label htmlFor="email" className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-slate-600">البريد الإلكتروني</Label>
+                                <Label htmlFor="email" className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-slate-600">Email</Label>
                                 <div className="relative">
-                                    <Mail className="w-4 h-4 absolute top-1/2 -translate-y-1/2 right-3 text-slate-400 pointer-events-none" />
+                                    <Mail className="w-4 h-4 absolute top-1/2 -translate-y-1/2 left-3 text-slate-400 pointer-events-none" />
                                     <Input
-                                        id="email" type="email" required dir="ltr"
+                                        id="email" type="email" required
                                         data-testid="login-email-input"
-                                        className="pe-9 ps-3 text-start"
+                                        className="pl-9"
                                         value={email}
                                         onChange={(e) => setEmail(e.target.value)}
                                         placeholder="name@medstock.sa"
@@ -69,13 +89,13 @@ export default function Login() {
                             </div>
 
                             <div>
-                                <Label htmlFor="password" className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-slate-600">كلمة المرور</Label>
+                                <Label htmlFor="password" className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-slate-600">Password</Label>
                                 <div className="relative">
-                                    <Lock className="w-4 h-4 absolute top-1/2 -translate-y-1/2 right-3 text-slate-400 pointer-events-none" />
+                                    <Lock className="w-4 h-4 absolute top-1/2 -translate-y-1/2 left-3 text-slate-400 pointer-events-none" />
                                     <Input
                                         id="password" type="password" required
                                         data-testid="login-password-input"
-                                        className="pe-9 ps-3"
+                                        className="pl-9"
                                         value={password}
                                         onChange={(e) => setPassword(e.target.value)}
                                     />
@@ -95,13 +115,13 @@ export default function Login() {
                                 className="w-full bg-sky-600 hover:bg-sky-700 text-white font-bold py-2.5"
                                 data-testid="login-submit-button"
                             >
-                                {loading ? "جاري الدخول..." : "دخول"}
+                                {loading ? "Signing in..." : "Sign in"}
                             </Button>
                         </form>
 
                         <div className="mt-6 pt-5 border-t border-slate-200 text-xs text-slate-500">
-                            <div className="font-bold mb-1 text-slate-700">حسابات تجريبية:</div>
-                            <ul className="space-y-1" dir="ltr">
+                            <div className="font-bold mb-1 text-slate-700">Demo accounts:</div>
+                            <ul className="space-y-1 font-mono">
                                 <li>admin@medstock.sa / Admin@12345</li>
                                 <li>head.er@medstock.sa / Head@12345</li>
                                 <li>officer.er@medstock.sa / Officer@12345</li>
@@ -111,26 +131,7 @@ export default function Login() {
                     </div>
 
                     <p className="text-center text-xs text-slate-400 mt-6">
-                        محمي بـ JWT + RBAC | متوافق مع مبادئ OWASP ASVS
-                    </p>
-                </div>
-            </div>
-
-            {/* Left side - image panel */}
-            <div className="hidden lg:block w-1/2 relative overflow-hidden">
-                <img
-                    src="https://images.unsplash.com/photo-1586773860418-d37222d8fce3?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NTJ8MHwxfHNlYXJjaHwxfHxtb2Rlcm4lMjBob3NwaXRhbCUyMGJ1aWxkaW5nJTIwZXh0ZXJpb3J8ZW58MHx8fHwxNzgxNjIwMDAzfDA&ixlib=rb-4.1.0&q=85"
-                    alt="hospital"
-                    className="absolute inset-0 w-full h-full object-cover"
-                />
-                <div className="absolute inset-0 bg-gradient-to-b from-slate-900/50 to-sky-900/70" />
-                <div className="absolute inset-0 flex flex-col justify-end p-10 text-white">
-                    <h2 className="font-heading text-3xl font-black leading-tight mb-3">
-                        من ملف Excel إلى نظام تشغيلي متكامل
-                    </h2>
-                    <p className="text-sm text-slate-100/90 leading-relaxed max-w-md">
-                        متابعة لحظية للأصناف الصفرية والحرجة و Backorder مع تنبيهات وتصعيد وسجل تدقيق
-                        كامل لضمان الحوكمة وسلامة المرضى.
+                        Secured with JWT + RBAC · Aligned with OWASP ASVS
                     </p>
                 </div>
             </div>

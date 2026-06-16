@@ -80,26 +80,26 @@ async def get_current_user(request: Request) -> dict:
     db: AsyncIOMotorDatabase = request.app.state.db
     token = _extract_token(request)
     if not token:
-        raise HTTPException(status_code=401, detail="غير مصادق - يرجى تسجيل الدخول")
+        raise HTTPException(status_code=401, detail="Not authenticated. Please sign in.")
     try:
         payload = jwt.decode(token, get_jwt_secret(), algorithms=[JWT_ALGORITHM])
         if payload.get("type") != "access":
-            raise HTTPException(status_code=401, detail="نوع رمز غير صحيح")
+            raise HTTPException(status_code=401, detail="Invalid token type")
         user = await db.users.find_one({"id": payload["sub"]}, {"_id": 0, "password_hash": 0})
         if not user or not user.get("is_active", True):
-            raise HTTPException(status_code=401, detail="المستخدم غير موجود أو معطل")
+            raise HTTPException(status_code=401, detail="User not found or disabled")
         return user
     except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="انتهت صلاحية الجلسة")
+        raise HTTPException(status_code=401, detail="Session expired")
     except jwt.InvalidTokenError:
-        raise HTTPException(status_code=401, detail="رمز غير صحيح")
+        raise HTTPException(status_code=401, detail="Invalid token")
 
 
 def require_roles(*allowed_roles: str):
     """Dependency factory enforcing role-based access."""
     async def _checker(user: dict = Depends(get_current_user)) -> dict:
         if user.get("role") not in allowed_roles and user.get("role") != "super_admin":
-            raise HTTPException(status_code=403, detail="ليس لديك صلاحية لتنفيذ هذا الإجراء")
+            raise HTTPException(status_code=403, detail="You do not have permission to perform this action")
         return user
     return _checker
 
@@ -115,7 +115,7 @@ async def check_lockout(db: AsyncIOMotorDatabase, identifier: str) -> None:
             locked_until = locked_until.replace(tzinfo=timezone.utc)
         if locked_until > datetime.now(timezone.utc):
             mins = int((locked_until - datetime.now(timezone.utc)).total_seconds() / 60) + 1
-            raise HTTPException(status_code=429, detail=f"تم تأمين الحساب. حاول بعد {mins} دقيقة")
+            raise HTTPException(status_code=429, detail=f"Account locked. Try again in {mins} minute(s).")
 
 
 async def register_failed_attempt(db: AsyncIOMotorDatabase, identifier: str) -> None:

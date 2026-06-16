@@ -37,7 +37,7 @@ export function RequestStatusBadge({ status }) {
         default: break;
     }
     return (
-        <span className={`inline-flex items-center rounded-md border px-2.5 py-1 text-xs font-bold ${color}`}>
+        <span className={`inline-flex items-center rounded-md border px-2.5 py-1 text-xs font-bold whitespace-nowrap ${color}`}>
             {label}
         </span>
     );

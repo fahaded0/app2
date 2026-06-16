@@ -1,17 +1,17 @@
 import React, { useState } from "react";
-import { api, API } from "@/lib/api";
+import { api, API, fmtDate } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Download, FileText, AlertCircle, AlertTriangle, Clock, Heart, Barcode, ClipboardList } from "lucide-react";
+import { Download, AlertCircle, AlertTriangle, Clock, Heart, Barcode, ClipboardList } from "lucide-react";
 import { StatusBadge, RequestStatusBadge } from "@/components/StatusBadge";
 
 const REPORTS = [
-    { key: "zero_level",   title: "تقرير البنود الصفرية", icon: AlertCircle, color: "text-red-600" },
-    { key: "critical_level", title: "تقرير البنود الحرجة", icon: AlertTriangle, color: "text-amber-600" },
-    { key: "backorder",    title: "تقرير Backorder",       icon: Clock,       color: "text-purple-600" },
-    { key: "open_requests", title: "الطلبات المفتوحة",     icon: ClipboardList, color: "text-sky-600" },
-    { key: "no_barcode",   title: "أصناف بدون باركود",     icon: Barcode,     color: "text-slate-600" },
-    { key: "life_saving",  title: "أصناف منقذة للحياة في خطر", icon: Heart,  color: "text-pink-600" },
+    { key: "zero_level",    title: "Zero Stock Items",          icon: AlertCircle,   color: "text-red-600" },
+    { key: "critical_level", title: "Critical Stock Items",     icon: AlertTriangle, color: "text-amber-600" },
+    { key: "backorder",     title: "Backorder Report",          icon: Clock,         color: "text-purple-600" },
+    { key: "open_requests", title: "Open Requests",             icon: ClipboardList, color: "text-sky-600" },
+    { key: "no_barcode",    title: "Items Without Barcode",     icon: Barcode,       color: "text-slate-600" },
+    { key: "life_saving",   title: "Life-Saving Items at Risk", icon: Heart,         color: "text-pink-600" },
 ];
 
 export default function Reports() {
@@ -32,7 +32,6 @@ export default function Reports() {
 
     function downloadCsv(key) {
         const token = localStorage.getItem("access_token");
-        // Open in new tab with token via header is not possible. Use fetch + blob.
         fetch(`${API}/reports/${key}/export.csv`, {
             headers: { Authorization: `Bearer ${token}` },
         }).then((r) => r.blob()).then((blob) => {
@@ -45,7 +44,7 @@ export default function Reports() {
 
     return (
         <div className="space-y-5" data-testid="reports-page">
-            <h1 className="font-heading text-3xl font-black tracking-tight">التقارير</h1>
+            <h1 className="font-heading text-3xl font-black tracking-tight">Reports</h1>
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                 {REPORTS.map((r) => (
@@ -63,7 +62,7 @@ export default function Reports() {
                                 </Button>
                             </div>
                             <div className="font-heading font-bold text-base mb-1">{r.title}</div>
-                            <div className="text-xs text-slate-500">اضغط للعرض، أو حمّل CSV</div>
+                            <div className="text-xs text-slate-500">Click to view, or download CSV</div>
                         </CardContent>
                     </Card>
                 ))}
@@ -74,46 +73,46 @@ export default function Reports() {
                     <CardHeader className="flex flex-row items-center justify-between">
                         <CardTitle className="font-heading text-lg">
                             {REPORTS.find((x) => x.key === selected)?.title}
-                            <span className="ms-2 text-sm font-normal text-slate-500">({data?.count || 0} سجل)</span>
+                            <span className="ml-2 text-sm font-normal text-slate-500 tabular-nums">({data?.count || 0} records)</span>
                         </CardTitle>
                         <Button onClick={() => downloadCsv(selected)} variant="outline"
                                 data-testid="export-csv-button">
-                            <Download className="w-4 h-4 me-2" /> تصدير CSV
+                            <Download className="w-4 h-4 mr-2" /> Export CSV
                         </Button>
                     </CardHeader>
                     <CardContent>
                         {loading ? (
-                            <div className="text-center py-10 text-slate-500">جاري التحميل...</div>
+                            <div className="text-center py-10 text-slate-500">Loading...</div>
                         ) : !data || data.rows.length === 0 ? (
-                            <div className="text-center py-10 text-slate-500">لا توجد بيانات</div>
+                            <div className="text-center py-10 text-slate-500">No data</div>
                         ) : (
                             <div className="overflow-x-auto">
-                                <table className="w-full text-sm">
+                                <table className="w-full text-sm table-dense">
                                     <thead className="bg-slate-50">
-                                        <tr className="text-start">
-                                            <th className="p-2 text-start font-bold text-xs uppercase tracking-wider text-slate-600">القسم</th>
-                                            <th className="p-2 text-start font-bold text-xs uppercase tracking-wider text-slate-600">الصنف</th>
-                                            <th className="p-2 text-start font-bold text-xs uppercase tracking-wider text-slate-600">الرصيد/الكمية</th>
-                                            <th className="p-2 text-start font-bold text-xs uppercase tracking-wider text-slate-600">الحالة</th>
-                                            <th className="p-2 text-start font-bold text-xs uppercase tracking-wider text-slate-600">التاريخ</th>
+                                        <tr>
+                                            <th className="w-24">Department</th>
+                                            <th>Item</th>
+                                            <th className="w-32 text-right">Balance/Qty</th>
+                                            <th className="w-40">Status</th>
+                                            <th className="w-44">Date</th>
                                         </tr>
                                     </thead>
                                     <tbody>
                                         {data.rows.map((r, i) => (
                                             <tr key={i} className="border-t border-slate-100 hover:bg-slate-50">
-                                                <td className="p-2 text-xs">{r.department?.code || "—"}</td>
-                                                <td className="p-2">
-                                                    <div className="font-bold text-sm">{r.item?.name_ar || r.name_ar || "—"}</div>
-                                                    <div className="text-xs text-slate-500" dir="ltr">{r.item?.internal_code || r.internal_code || ""}</div>
+                                                <td className="text-xs font-mono">{r.department?.code || "—"}</td>
+                                                <td>
+                                                    <div className="font-semibold text-sm">{r.item?.name_en || r.name_en || "—"}</div>
+                                                    <div className="text-xs text-slate-500 font-mono">{r.item?.internal_code || r.internal_code || ""}</div>
                                                 </td>
-                                                <td className="p-2 font-mono text-sm">{r.balance ?? r.requested_qty ?? "—"}</td>
-                                                <td className="p-2">
+                                                <td className="num-cell">{r.balance ?? r.requested_qty ?? "—"}</td>
+                                                <td>
                                                     {r.status && (selected === "open_requests" || selected === "backorder"
                                                         ? <RequestStatusBadge status={r.status} />
                                                         : <StatusBadge status={r.status} size="sm" />)}
                                                 </td>
-                                                <td className="p-2 text-xs text-slate-500" dir="ltr">
-                                                    {(r.last_updated_at || r.created_at) ? new Date(r.last_updated_at || r.created_at).toLocaleString("ar-SA") : ""}
+                                                <td className="text-xs text-slate-500 font-mono">
+                                                    {fmtDate(r.last_updated_at || r.created_at)}
                                                 </td>
                                             </tr>
                                         ))}

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { api } from "@/lib/api";
+import { api, fmtDate } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import {
     Select, SelectTrigger, SelectValue, SelectContent, SelectItem
@@ -19,7 +19,7 @@ const SEVERITY_ICON = {
     critical: AlertCircle, danger: AlertCircle, warning: AlertTriangle, info: Bell,
 };
 const SEVERITY_LABEL = {
-    critical: "حرج جداً", danger: "خطر", warning: "تحذير", info: "معلومة",
+    critical: "Critical", danger: "Danger", warning: "Warning", info: "Info",
 };
 
 export default function Alerts() {
@@ -38,25 +38,25 @@ export default function Alerts() {
 
     async function acknowledge(id) {
         await api.post(`/alerts/${id}/acknowledge`);
-        toast.success("تم استلام التنبيه");
+        toast.success("Alert acknowledged");
         load();
     }
 
     return (
         <div className="space-y-5" data-testid="alerts-page">
             <div className="flex items-center justify-between">
-                <h1 className="font-heading text-3xl font-black tracking-tight">التنبيهات</h1>
+                <h1 className="font-heading text-3xl font-black tracking-tight">Alerts</h1>
                 <div className="flex items-center gap-3">
                     <Select value={severityFilter} onValueChange={setSeverityFilter}>
                         <SelectTrigger className="w-44" data-testid="alerts-severity-filter">
-                            <SelectValue placeholder="كل الخطورات" />
+                            <SelectValue placeholder="All Severities" />
                         </SelectTrigger>
                         <SelectContent>
-                            <SelectItem value="all">كل الخطورات</SelectItem>
-                            <SelectItem value="critical">حرج جداً</SelectItem>
-                            <SelectItem value="danger">خطر</SelectItem>
-                            <SelectItem value="warning">تحذير</SelectItem>
-                            <SelectItem value="info">معلومة</SelectItem>
+                            <SelectItem value="all">All Severities</SelectItem>
+                            <SelectItem value="critical">Critical</SelectItem>
+                            <SelectItem value="danger">Danger</SelectItem>
+                            <SelectItem value="warning">Warning</SelectItem>
+                            <SelectItem value="info">Info</SelectItem>
                         </SelectContent>
                     </Select>
                     <Select value={filter} onValueChange={setFilter}>
@@ -64,9 +64,9 @@ export default function Alerts() {
                             <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
-                            <SelectItem value="unack">غير مستلمة</SelectItem>
-                            <SelectItem value="ack">مستلمة</SelectItem>
-                            <SelectItem value="all">كل التنبيهات</SelectItem>
+                            <SelectItem value="unack">Unacknowledged</SelectItem>
+                            <SelectItem value="ack">Acknowledged</SelectItem>
+                            <SelectItem value="all">All Alerts</SelectItem>
                         </SelectContent>
                     </Select>
                 </div>
@@ -75,8 +75,8 @@ export default function Alerts() {
             {alerts.length === 0 ? (
                 <div className="bg-white border border-slate-200 rounded-lg p-10 text-center">
                     <ShieldCheck className="w-12 h-12 mx-auto text-emerald-500 mb-2" />
-                    <div className="font-bold">لا توجد تنبيهات حالياً</div>
-                    <div className="text-sm text-slate-500">جميع البنود في وضع طبيعي</div>
+                    <div className="font-bold">No active alerts</div>
+                    <div className="text-sm text-slate-500">All items are in a normal state.</div>
                 </div>
             ) : (
                 <div className="space-y-3">
@@ -103,33 +103,33 @@ export default function Alerts() {
                                         </span>
                                         {a.item?.is_life_saving && (
                                             <span className="status-pill status-zero text-[10px]">
-                                                <Heart className="w-3 h-3" />منقذ للحياة
+                                                <Heart className="w-3 h-3" />Life-Saving
                                             </span>
                                         )}
                                     </div>
                                     <div className="text-sm text-slate-700 mb-2">{a.message}</div>
-                                    <div className="flex flex-wrap gap-3 text-xs text-slate-500">
+                                    <div className="flex flex-wrap gap-4 text-xs text-slate-500">
                                         {a.department && (
-                                            <span>القسم: <b>{a.department.name_ar} ({a.department.code})</b></span>
+                                            <span>Department: <b>{a.department.name_en} ({a.department.code})</b></span>
                                         )}
                                         {a.item && (
-                                            <span>الصنف: <b>{a.item.name_ar}</b></span>
+                                            <span>Item: <b>{a.item.name_en}</b></span>
                                         )}
-                                        <span dir="ltr" className="inline-flex items-center gap-1">
+                                        <span className="inline-flex items-center gap-1 font-mono">
                                             <Clock className="w-3 h-3" />
-                                            {new Date(a.created_at).toLocaleString("ar-SA")}
+                                            {fmtDate(a.created_at)}
                                         </span>
                                     </div>
                                 </div>
                                 {!a.acknowledged && (
                                     <Button onClick={() => acknowledge(a.id)} variant="outline" size="sm"
                                             data-testid={`acknowledge-alert-${a.id}`}>
-                                        <ShieldCheck className="w-4 h-4 me-1" /> استلام
+                                        <ShieldCheck className="w-4 h-4 mr-1" /> Acknowledge
                                     </Button>
                                 )}
                                 {a.acknowledged && (
                                     <span className="text-xs text-slate-400 inline-flex items-center gap-1">
-                                        <ShieldCheck className="w-3.5 h-3.5" /> مستلم
+                                        <ShieldCheck className="w-3.5 h-3.5" /> Acknowledged
                                     </span>
                                 )}
                             </div>

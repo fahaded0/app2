@@ -10,7 +10,7 @@ import {
 import {
     Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogTrigger
 } from "@/components/ui/dialog";
-import { Plus, Building2 } from "lucide-react";
+import { Plus } from "lucide-react";
 import { toast } from "sonner";
 
 export default function Departments() {
@@ -25,8 +25,11 @@ export default function Departments() {
 
     async function save() {
         try {
-            await api.post("/departments", form);
-            toast.success("تم إنشاء القسم");
+            await api.post("/departments", {
+                ...form,
+                name_ar: form.name_ar || form.name_en,
+            });
+            toast.success("Department created");
             setOpen(false);
             setForm({ code: "", name_ar: "", name_en: "", is_critical: false });
             load();
@@ -38,41 +41,36 @@ export default function Departments() {
     return (
         <div className="space-y-5" data-testid="departments-page">
             <div className="flex items-center justify-between">
-                <h1 className="font-heading text-3xl font-black tracking-tight">الأقسام</h1>
+                <h1 className="font-heading text-3xl font-black tracking-tight">Departments</h1>
                 <Dialog open={open} onOpenChange={setOpen}>
                     <DialogTrigger asChild>
                         <Button className="bg-sky-600 hover:bg-sky-700" data-testid="add-dept-button">
-                            <Plus className="w-4 h-4 me-2" /> إضافة قسم
+                            <Plus className="w-4 h-4 mr-2" /> Add Department
                         </Button>
                     </DialogTrigger>
-                    <DialogContent dir="rtl">
-                        <DialogHeader><DialogTitle>إضافة قسم جديد</DialogTitle></DialogHeader>
+                    <DialogContent>
+                        <DialogHeader><DialogTitle>Add New Department</DialogTitle></DialogHeader>
                         <div className="space-y-3">
                             <div>
-                                <Label className="text-xs font-bold">الرمز (Code)</Label>
-                                <Input value={form.code} dir="ltr" data-testid="dept-code-input"
+                                <Label className="text-xs font-bold">Code</Label>
+                                <Input value={form.code} data-testid="dept-code-input"
                                        onChange={(e) => setForm({ ...form, code: e.target.value })} />
                             </div>
                             <div>
-                                <Label className="text-xs font-bold">الاسم بالعربية</Label>
-                                <Input value={form.name_ar} data-testid="dept-name-ar-input"
-                                       onChange={(e) => setForm({ ...form, name_ar: e.target.value })} />
-                            </div>
-                            <div>
-                                <Label className="text-xs font-bold">English Name</Label>
-                                <Input value={form.name_en} dir="ltr"
+                                <Label className="text-xs font-bold">Department Name</Label>
+                                <Input value={form.name_en} data-testid="dept-name-input"
                                        onChange={(e) => setForm({ ...form, name_en: e.target.value })} />
                             </div>
                             <label className="flex items-center justify-between bg-slate-50 rounded-md p-3 border border-slate-200">
-                                <span className="text-sm font-bold">قسم حرج (Critical Department)</span>
+                                <span className="text-sm font-bold">Critical Department</span>
                                 <Switch checked={form.is_critical}
                                         onCheckedChange={(v) => setForm({ ...form, is_critical: v })} />
                             </label>
                         </div>
                         <DialogFooter>
-                            <Button variant="outline" onClick={() => setOpen(false)}>إلغاء</Button>
+                            <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
                             <Button onClick={save} className="bg-sky-600 hover:bg-sky-700"
-                                    data-testid="save-dept-button">إنشاء</Button>
+                                    data-testid="save-dept-button">Create</Button>
                         </DialogFooter>
                     </DialogContent>
                 </Dialog>
@@ -82,21 +80,19 @@ export default function Departments() {
                 <Table className="table-dense">
                     <TableHeader className="bg-slate-50">
                         <TableRow>
-                            <TableHead className="text-start">الرمز</TableHead>
-                            <TableHead className="text-start">الاسم</TableHead>
-                            <TableHead className="text-start">English</TableHead>
-                            <TableHead className="text-start">حرج</TableHead>
+                            <TableHead className="w-32">Code</TableHead>
+                            <TableHead>Name</TableHead>
+                            <TableHead className="w-32">Critical</TableHead>
                         </TableRow>
                     </TableHeader>
                     <TableBody>
                         {list.map((d) => (
                             <TableRow key={d.id} data-testid={`dept-row-${d.id}`} className="hover:bg-slate-50">
                                 <TableCell><span className="font-mono text-xs bg-slate-100 px-2 py-0.5 rounded">{d.code}</span></TableCell>
-                                <TableCell className="font-bold">{d.name_ar}</TableCell>
-                                <TableCell className="text-sm text-slate-600" dir="ltr">{d.name_en}</TableCell>
+                                <TableCell className="font-semibold">{d.name_en}</TableCell>
                                 <TableCell>
                                     {d.is_critical ? (
-                                        <span className="status-pill status-critical text-[10px]">حرج</span>
+                                        <span className="status-pill status-critical text-[10px]">Critical</span>
                                     ) : (
                                         <span className="text-xs text-slate-400">—</span>
                                     )}

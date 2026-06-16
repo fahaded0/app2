@@ -1,10 +1,9 @@
 import React, { useEffect, useState } from "react";
-import { api } from "@/lib/api";
-import { StatusBadge } from "@/components/StatusBadge";
+import { api, fmtDate } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
-    AlertCircle, AlertTriangle, Boxes, Clock, ShieldAlert,
+    AlertCircle, AlertTriangle, Clock, ShieldAlert,
     Activity, Building2, Heart, Package, TrendingUp
 } from "lucide-react";
 import {
@@ -19,7 +18,7 @@ const KPI = ({ label, value, icon: Icon, color, sub, testid }) => (
             <div className="text-xs font-bold tracking-wider uppercase text-slate-500">{label}</div>
             <Icon className="w-7 h-7 opacity-80" />
         </div>
-        <div className="font-heading text-3xl font-black tracking-tight">{value}</div>
+        <div className="font-heading text-3xl font-black tracking-tight tabular-nums">{value}</div>
         {sub && <div className="mt-1 text-xs text-slate-500">{sub}</div>}
     </div>
 );
@@ -47,49 +46,49 @@ export default function Dashboard() {
     if (!data) return null;
 
     const chartData = data.by_department.map((d) => ({
-        name: d.department?.code || "؟",
-        "صفر": d.zero_level || 0,
-        "حرج": d.critical_level || 0,
-        "متوفر": d.available || 0,
-        "عاد للمخزون": d.back_in_stock || 0,
+        name: d.department?.code || "?",
+        "Zero": d.zero_level || 0,
+        "Critical": d.critical_level || 0,
+        "Available": d.available || 0,
+        "Back in Stock": d.back_in_stock || 0,
     }));
 
     const distData = [
-        { name: "صفر مخزون", value: data.zero_count, color: "#DC2626" },
-        { name: "حرج", value: data.critical_count, color: "#D97706" },
-        { name: "عاد للمخزون", value: data.back_in_stock_count, color: "#2563EB" },
-        { name: "متوفر", value: data.available_count, color: "#0D9488" },
+        { name: "Zero Stock", value: data.zero_count, color: "#DC2626" },
+        { name: "Critical", value: data.critical_count, color: "#D97706" },
+        { name: "Back in Stock", value: data.back_in_stock_count, color: "#2563EB" },
+        { name: "Available", value: data.available_count, color: "#0D9488" },
     ].filter((d) => d.value > 0);
 
     return (
         <div className="space-y-6" data-testid="dashboard-page">
             <div className="flex items-baseline justify-between">
                 <h1 className="font-heading text-3xl font-black tracking-tight" data-testid="dashboard-title">
-                    لوحة المؤشرات
+                    Dashboard
                 </h1>
-                <div className="text-xs text-slate-500">
-                    آخر تحديث: {new Date().toLocaleString("ar-SA")}
+                <div className="text-xs text-slate-500 font-mono">
+                    Last updated: {fmtDate(new Date().toISOString())}
                 </div>
             </div>
 
             {/* KPI grid */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                <KPI label="صفر مخزون" value={data.zero_count} icon={AlertCircle}
+                <KPI label="Zero Stock" value={data.zero_count} icon={AlertCircle}
                      color="text-red-700 border-red-200 bg-red-50/40" testid="kpi-zero" />
-                <KPI label="مخزون حرج" value={data.critical_count} icon={AlertTriangle}
+                <KPI label="Critical Stock" value={data.critical_count} icon={AlertTriangle}
                      color="text-amber-700 border-amber-200 bg-amber-50/40" testid="kpi-critical" />
                 <KPI label="Backorder" value={data.backorder_count} icon={Clock}
                      color="text-purple-700 border-purple-200 bg-purple-50/40" testid="kpi-backorder" />
-                <KPI label="منقذ للحياة في خطر" value={data.life_saving_risk} icon={Heart}
+                <KPI label="Life-Saving at Risk" value={data.life_saving_risk} icon={Heart}
                      color="text-pink-700 border-pink-200 bg-pink-50/40" testid="kpi-lifesaving" />
 
-                <KPI label="طلبات بانتظار الاعتماد" value={data.pending_requests} icon={Activity}
+                <KPI label="Pending Approval" value={data.pending_requests} icon={Activity}
                      color="text-sky-700 border-sky-200 bg-sky-50/40" testid="kpi-pending" />
-                <KPI label="تم الصرف" value={data.dispatched_requests} icon={Package}
+                <KPI label="Dispatched" value={data.dispatched_requests} icon={Package}
                      color="text-indigo-700 border-indigo-200 bg-indigo-50/40" testid="kpi-dispatched" />
-                <KPI label="تنبيهات مفتوحة" value={data.open_alerts} icon={ShieldAlert}
+                <KPI label="Open Alerts" value={data.open_alerts} icon={ShieldAlert}
                      color="text-orange-700 border-orange-200 bg-orange-50/40" testid="kpi-alerts" />
-                <KPI label="لم يحدث منذ 24س" value={data.stale_count} icon={TrendingUp}
+                <KPI label="Stale (>24h)" value={data.stale_count} icon={TrendingUp}
                      color="text-slate-700 border-slate-200" testid="kpi-stale" />
             </div>
 
@@ -97,20 +96,20 @@ export default function Dashboard() {
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
                 <Card className="lg:col-span-2 border-slate-200" data-testid="chart-by-dept">
                     <CardHeader className="pb-2">
-                        <CardTitle className="font-heading text-lg">حالة المخزون حسب القسم</CardTitle>
+                        <CardTitle className="font-heading text-lg">Stock Status by Department</CardTitle>
                     </CardHeader>
                     <CardContent>
                         <ResponsiveContainer width="100%" height={280}>
                             <BarChart data={chartData}>
                                 <CartesianGrid strokeDasharray="3 3" stroke="#E2E8F0" />
-                                <XAxis dataKey="name" tick={{ fontFamily: "Cairo", fontSize: 12 }} reversed />
-                                <YAxis orientation="right" tick={{ fontFamily: "Cairo", fontSize: 12 }} />
-                                <Tooltip contentStyle={{ fontFamily: "IBM Plex Sans Arabic", fontSize: 12 }} />
-                                <Legend wrapperStyle={{ fontFamily: "IBM Plex Sans Arabic", fontSize: 12 }} />
-                                <Bar dataKey="صفر" stackId="a" fill="#DC2626" />
-                                <Bar dataKey="حرج" stackId="a" fill="#D97706" />
-                                <Bar dataKey="متوفر" stackId="a" fill="#0D9488" />
-                                <Bar dataKey="عاد للمخزون" stackId="a" fill="#2563EB" />
+                                <XAxis dataKey="name" tick={{ fontFamily: "Inter", fontSize: 12 }} />
+                                <YAxis tick={{ fontFamily: "Inter", fontSize: 12 }} />
+                                <Tooltip contentStyle={{ fontFamily: "Inter", fontSize: 12 }} />
+                                <Legend wrapperStyle={{ fontFamily: "Inter", fontSize: 12 }} />
+                                <Bar dataKey="Zero" stackId="a" fill="#DC2626" />
+                                <Bar dataKey="Critical" stackId="a" fill="#D97706" />
+                                <Bar dataKey="Available" stackId="a" fill="#0D9488" />
+                                <Bar dataKey="Back in Stock" stackId="a" fill="#2563EB" />
                             </BarChart>
                         </ResponsiveContainer>
                     </CardContent>
@@ -118,11 +117,11 @@ export default function Dashboard() {
 
                 <Card className="border-slate-200" data-testid="chart-distribution">
                     <CardHeader className="pb-2">
-                        <CardTitle className="font-heading text-lg">توزيع الحالات</CardTitle>
+                        <CardTitle className="font-heading text-lg">Status Distribution</CardTitle>
                     </CardHeader>
                     <CardContent>
                         {distData.length === 0 ? (
-                            <div className="text-sm text-slate-500 py-8 text-center">لا توجد بيانات</div>
+                            <div className="text-sm text-slate-500 py-8 text-center">No data</div>
                         ) : (
                             <ResponsiveContainer width="100%" height={280}>
                                 <PieChart>
@@ -130,8 +129,8 @@ export default function Dashboard() {
                                          innerRadius={50} outerRadius={90}>
                                         {distData.map((d, i) => <Cell key={i} fill={d.color} />)}
                                     </Pie>
-                                    <Tooltip contentStyle={{ fontFamily: "IBM Plex Sans Arabic", fontSize: 12 }} />
-                                    <Legend wrapperStyle={{ fontFamily: "IBM Plex Sans Arabic", fontSize: 12 }} />
+                                    <Tooltip contentStyle={{ fontFamily: "Inter", fontSize: 12 }} />
+                                    <Legend wrapperStyle={{ fontFamily: "Inter", fontSize: 12 }} />
                                 </PieChart>
                             </ResponsiveContainer>
                         )}
@@ -144,18 +143,18 @@ export default function Dashboard() {
                 <Card className="lg:col-span-2 border-slate-200" data-testid="recent-alerts-card">
                     <CardHeader className="pb-2">
                         <CardTitle className="font-heading text-lg flex items-center gap-2">
-                            <ShieldAlert className="w-5 h-5 text-amber-600" /> آخر التنبيهات
+                            <ShieldAlert className="w-5 h-5 text-amber-600" /> Recent Alerts
                         </CardTitle>
                     </CardHeader>
                     <CardContent>
                         {data.recent_alerts.length === 0 ? (
-                            <div className="text-sm text-slate-500 py-6 text-center">لا توجد تنبيهات</div>
+                            <div className="text-sm text-slate-500 py-6 text-center">No alerts</div>
                         ) : (
                             <ul className="divide-y divide-slate-200">
                                 {data.recent_alerts.map((a) => (
                                     <li key={a.id} className="py-3 flex items-start gap-3"
                                         data-testid={`recent-alert-${a.id}`}>
-                                        <div className={`w-2 h-2 mt-2 rounded-full ${
+                                        <div className={`w-2 h-2 mt-2 rounded-full shrink-0 ${
                                             a.severity === "critical" ? "bg-red-500 animate-pulse-slow" :
                                             a.severity === "danger" ? "bg-red-500" :
                                             a.severity === "warning" ? "bg-amber-500" : "bg-sky-500"
@@ -165,14 +164,14 @@ export default function Dashboard() {
                                                 <div className="font-bold text-sm text-slate-900 truncate">{a.title}</div>
                                                 {a.item?.is_life_saving && (
                                                     <span className="status-pill status-zero text-[10px]">
-                                                        <Heart className="w-3 h-3" />منقذ للحياة
+                                                        <Heart className="w-3 h-3" />Life-Saving
                                                     </span>
                                                 )}
                                             </div>
                                             <div className="text-xs text-slate-500">{a.message}</div>
                                         </div>
-                                        <div className="text-xs text-slate-400 whitespace-nowrap" dir="ltr">
-                                            {new Date(a.created_at).toLocaleString("ar-SA")}
+                                        <div className="text-xs text-slate-400 whitespace-nowrap font-mono">
+                                            {fmtDate(a.created_at)}
                                         </div>
                                     </li>
                                 ))}
@@ -184,22 +183,22 @@ export default function Dashboard() {
                 <Card className="border-slate-200" data-testid="top-departments-card">
                     <CardHeader className="pb-2">
                         <CardTitle className="font-heading text-lg flex items-center gap-2">
-                            <Building2 className="w-5 h-5 text-sky-600" /> أكثر الأقسام تأثراً
+                            <Building2 className="w-5 h-5 text-sky-600" /> Most Affected Departments
                         </CardTitle>
                     </CardHeader>
                     <CardContent>
                         {data.top_departments.length === 0 ? (
-                            <div className="text-sm text-slate-500 py-6 text-center">لا توجد بيانات</div>
+                            <div className="text-sm text-slate-500 py-6 text-center">No data</div>
                         ) : (
                             <ul className="space-y-2">
                                 {data.top_departments.map((d) => (
                                     <li key={d.department.id}
                                         className="flex items-center justify-between bg-slate-50 rounded-md px-3 py-2 border border-slate-100">
                                         <div>
-                                            <div className="font-bold text-sm">{d.department.name_ar}</div>
-                                            <div className="text-xs text-slate-500">{d.department.code}</div>
+                                            <div className="font-bold text-sm">{d.department.name_en}</div>
+                                            <div className="text-xs text-slate-500 font-mono">{d.department.code}</div>
                                         </div>
-                                        <div className="font-heading text-2xl font-black text-red-600">{d.count}</div>
+                                        <div className="font-heading text-2xl font-black text-red-600 tabular-nums">{d.count}</div>
                                     </li>
                                 ))}
                             </ul>

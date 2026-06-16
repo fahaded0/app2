@@ -67,6 +67,7 @@ export default function Items() {
         try {
             const payload = {
                 ...form,
+                name_ar: form.name_ar || form.name_en,
                 min_level: Number(form.min_level) || 0,
                 critical_threshold: Number(form.critical_threshold) || 0,
                 max_level: Number(form.max_level) || 0,
@@ -78,10 +79,10 @@ export default function Items() {
             if (editing) {
                 const { internal_code: _ic, id: _id, created_at: _c, updated_at: _u, ...rest } = payload;
                 await api.patch(`/items/${editing.id}`, rest);
-                toast.success("تم تحديث الصنف");
+                toast.success("Item updated");
             } else {
                 await api.post("/items", payload);
-                toast.success("تم إنشاء الصنف");
+                toast.success("Item created");
             }
             setDialogOpen(false);
             load();
@@ -95,21 +96,21 @@ export default function Items() {
     return (
         <div className="space-y-5" data-testid="items-page">
             <div className="flex items-center justify-between gap-4">
-                <h1 className="font-heading text-3xl font-black tracking-tight">سجل الأصناف (Item Master)</h1>
+                <h1 className="font-heading text-3xl font-black tracking-tight">Item Master</h1>
                 {canManage && (
                     <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
                         <DialogTrigger asChild>
                             <Button onClick={openCreate} data-testid="add-item-button" className="bg-sky-600 hover:bg-sky-700">
-                                <Plus className="w-4 h-4 me-2" /> إضافة صنف
+                                <Plus className="w-4 h-4 mr-2" /> Add Item
                             </Button>
                         </DialogTrigger>
-                        <DialogContent className="max-w-2xl" dir="rtl">
+                        <DialogContent className="max-w-2xl">
                             <DialogHeader>
-                                <DialogTitle>{editing ? "تعديل صنف" : "إضافة صنف جديد"}</DialogTitle>
+                                <DialogTitle>{editing ? "Edit Item" : "Add New Item"}</DialogTitle>
                             </DialogHeader>
-                            <div className="grid grid-cols-2 gap-3 max-h-[60vh] overflow-y-auto pe-1">
+                            <div className="grid grid-cols-2 gap-3 max-h-[60vh] overflow-y-auto pr-1">
                                 <div>
-                                    <Label className="text-xs font-bold">رمز داخلي</Label>
+                                    <Label className="text-xs font-bold">Internal Code</Label>
                                     <Input value={form.internal_code} disabled={!!editing}
                                            data-testid="item-internal-code-input"
                                            onChange={(e) => setForm({ ...form, internal_code: e.target.value })} />
@@ -124,7 +125,7 @@ export default function Items() {
                                     <Input value={form.udi || ""} onChange={(e) => setForm({ ...form, udi: e.target.value })} />
                                 </div>
                                 <div>
-                                    <Label className="text-xs font-bold">الفئة</Label>
+                                    <Label className="text-xs font-bold">Category</Label>
                                     <Select value={form.category} onValueChange={(v) => setForm({ ...form, category: v })}>
                                         <SelectTrigger><SelectValue /></SelectTrigger>
                                         <SelectContent>
@@ -132,18 +133,13 @@ export default function Items() {
                                         </SelectContent>
                                     </Select>
                                 </div>
-                                <div>
-                                    <Label className="text-xs font-bold">الاسم بالعربية</Label>
-                                    <Input value={form.name_ar} data-testid="item-name-ar-input"
-                                           onChange={(e) => setForm({ ...form, name_ar: e.target.value })} />
-                                </div>
-                                <div>
-                                    <Label className="text-xs font-bold">English Name</Label>
-                                    <Input value={form.name_en} dir="ltr"
+                                <div className="col-span-2">
+                                    <Label className="text-xs font-bold">Item Name</Label>
+                                    <Input value={form.name_en} data-testid="item-name-input"
                                            onChange={(e) => setForm({ ...form, name_en: e.target.value })} />
                                 </div>
                                 <div>
-                                    <Label className="text-xs font-bold">الوحدة</Label>
+                                    <Label className="text-xs font-bold">Unit</Label>
                                     <Select value={form.unit} onValueChange={(v) => setForm({ ...form, unit: v })}>
                                         <SelectTrigger><SelectValue /></SelectTrigger>
                                         <SelectContent>
@@ -152,54 +148,54 @@ export default function Items() {
                                     </Select>
                                 </div>
                                 <div>
-                                    <Label className="text-xs font-bold">المورد</Label>
+                                    <Label className="text-xs font-bold">Supplier</Label>
                                     <Input value={form.supplier || ""}
                                            onChange={(e) => setForm({ ...form, supplier: e.target.value })} />
                                 </div>
                                 <div>
-                                    <Label className="text-xs font-bold">الحد الأدنى</Label>
+                                    <Label className="text-xs font-bold">Min Level</Label>
                                     <Input type="number" value={form.min_level} data-testid="item-min-input"
                                            onChange={(e) => setForm({ ...form, min_level: e.target.value })} />
                                 </div>
                                 <div>
-                                    <Label className="text-xs font-bold">الحد الحرج</Label>
+                                    <Label className="text-xs font-bold">Critical Threshold</Label>
                                     <Input type="number" value={form.critical_threshold} data-testid="item-critical-input"
                                            onChange={(e) => setForm({ ...form, critical_threshold: e.target.value })} />
                                 </div>
                                 <div>
-                                    <Label className="text-xs font-bold">الحد الأعلى</Label>
+                                    <Label className="text-xs font-bold">Max Level</Label>
                                     <Input type="number" value={form.max_level}
                                            onChange={(e) => setForm({ ...form, max_level: e.target.value })} />
                                 </div>
                                 <div className="col-span-2 grid grid-cols-3 gap-3 pt-2">
                                     <label className="flex items-center justify-between bg-slate-50 rounded-md p-2 border border-slate-200">
-                                        <span className="text-xs font-bold">منقذ للحياة</span>
+                                        <span className="text-xs font-bold">Life-Saving</span>
                                         <Switch checked={!!form.is_life_saving}
                                                 onCheckedChange={(v) => setForm({ ...form, is_life_saving: v })}
                                                 data-testid="item-lifesaving-toggle" />
                                     </label>
                                     <label className="flex items-center justify-between bg-slate-50 rounded-md p-2 border border-slate-200">
-                                        <span className="text-xs font-bold">عربة الطوارئ</span>
+                                        <span className="text-xs font-bold">Crash Cart</span>
                                         <Switch checked={!!form.is_crash_cart}
                                                 onCheckedChange={(v) => setForm({ ...form, is_crash_cart: v })} />
                                     </label>
                                     <label className="flex items-center justify-between bg-slate-50 rounded-md p-2 border border-slate-200">
-                                        <span className="text-xs font-bold">يحتاج انتهاء</span>
+                                        <span className="text-xs font-bold">Needs Expiry</span>
                                         <Switch checked={!!form.requires_expiry}
                                                 onCheckedChange={(v) => setForm({ ...form, requires_expiry: v })} />
                                     </label>
                                 </div>
                                 <div className="col-span-2">
-                                    <Label className="text-xs font-bold">ملاحظات</Label>
+                                    <Label className="text-xs font-bold">Notes</Label>
                                     <Input value={form.notes || ""}
                                            onChange={(e) => setForm({ ...form, notes: e.target.value })} />
                                 </div>
                             </div>
                             <DialogFooter>
-                                <Button variant="outline" onClick={() => setDialogOpen(false)}>إلغاء</Button>
+                                <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
                                 <Button onClick={save} disabled={saving} className="bg-sky-600 hover:bg-sky-700"
                                         data-testid="save-item-button">
-                                    {saving ? "جاري الحفظ..." : "حفظ"}
+                                    {saving ? "Saving..." : "Save"}
                                 </Button>
                             </DialogFooter>
                         </DialogContent>
@@ -210,22 +206,22 @@ export default function Items() {
             {/* Filter bar */}
             <div className="flex flex-wrap items-center gap-3 bg-white border border-slate-200 rounded-lg p-3">
                 <div className="relative flex-1 min-w-[220px]">
-                    <Search className="w-4 h-4 absolute top-1/2 -translate-y-1/2 right-3 text-slate-400 pointer-events-none" />
+                    <Search className="w-4 h-4 absolute top-1/2 -translate-y-1/2 left-3 text-slate-400 pointer-events-none" />
                     <Input value={search} onChange={(e) => setSearch(e.target.value)}
-                           placeholder="ابحث بالاسم أو الباركود أو الرمز..."
+                           placeholder="Search by name, barcode or code..."
                            data-testid="items-search-input"
-                           className="pe-9" />
+                           className="pl-9" />
                 </div>
                 <Select value={categoryFilter} onValueChange={setCategoryFilter}>
                     <SelectTrigger className="w-48" data-testid="items-category-filter">
-                        <SelectValue placeholder="كل الفئات" />
+                        <SelectValue placeholder="All Categories" />
                     </SelectTrigger>
                     <SelectContent>
-                        <SelectItem value="all">كل الفئات</SelectItem>
+                        <SelectItem value="all">All Categories</SelectItem>
                         {CATEGORIES.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}
                     </SelectContent>
                 </Select>
-                <div className="text-sm text-slate-500">العدد: <b>{filtered.length}</b></div>
+                <div className="text-sm text-slate-500">Total: <b className="tabular-nums">{filtered.length}</b></div>
             </div>
 
             {/* Table */}
@@ -233,22 +229,22 @@ export default function Items() {
                 <Table className="table-dense">
                     <TableHeader className="bg-slate-50">
                         <TableRow>
-                            <TableHead className="text-start">الرمز</TableHead>
-                            <TableHead className="text-start">الباركود</TableHead>
-                            <TableHead className="text-start">الاسم</TableHead>
-                            <TableHead className="text-start">الفئة</TableHead>
-                            <TableHead className="text-start">الوحدة</TableHead>
-                            <TableHead className="text-start">Min</TableHead>
-                            <TableHead className="text-start">Critical</TableHead>
-                            <TableHead className="text-start">العلامات</TableHead>
-                            {canManage && <TableHead className="text-start">إجراءات</TableHead>}
+                            <TableHead className="w-32">Code</TableHead>
+                            <TableHead className="w-40">Barcode</TableHead>
+                            <TableHead>Name</TableHead>
+                            <TableHead className="w-28">Category</TableHead>
+                            <TableHead className="w-20">Unit</TableHead>
+                            <TableHead className="w-20 text-right">Min</TableHead>
+                            <TableHead className="w-24 text-right">Critical</TableHead>
+                            <TableHead className="w-44">Flags</TableHead>
+                            {canManage && <TableHead className="w-20">Actions</TableHead>}
                         </TableRow>
                     </TableHeader>
                     <TableBody>
                         {filtered.map((it) => (
                             <TableRow key={it.id} data-testid={`item-row-${it.id}`} className="hover:bg-slate-50">
-                                <TableCell className="font-mono text-xs" dir="ltr">{it.internal_code}</TableCell>
-                                <TableCell className="font-mono text-xs" dir="ltr">
+                                <TableCell className="code-cell">{it.internal_code}</TableCell>
+                                <TableCell className="code-cell">
                                     {it.barcode ? (
                                         <span className="inline-flex items-center gap-1">
                                             <Barcode className="w-3.5 h-3.5 text-slate-400" />{it.barcode}
@@ -258,17 +254,16 @@ export default function Items() {
                                     )}
                                 </TableCell>
                                 <TableCell>
-                                    <div className="font-bold">{it.name_ar}</div>
-                                    <div className="text-xs text-slate-500" dir="ltr">{it.name_en}</div>
+                                    <div className="font-semibold text-sm">{it.name_en}</div>
                                 </TableCell>
                                 <TableCell><span className="text-xs">{it.category}</span></TableCell>
-                                <TableCell><span className="text-xs">{it.unit}</span></TableCell>
-                                <TableCell>{it.min_level}</TableCell>
-                                <TableCell>{it.critical_threshold}</TableCell>
+                                <TableCell><span className="text-xs font-mono">{it.unit}</span></TableCell>
+                                <TableCell className="num-cell">{it.min_level}</TableCell>
+                                <TableCell className="num-cell">{it.critical_threshold}</TableCell>
                                 <TableCell>
                                     <div className="flex gap-1 flex-wrap">
-                                        {it.is_life_saving && <span className="status-pill status-zero text-[10px]"><Heart className="w-3 h-3" />منقذ</span>}
-                                        {it.is_crash_cart && <span className="status-pill status-critical text-[10px]"><PackageOpen className="w-3 h-3" />عربة طوارئ</span>}
+                                        {it.is_life_saving && <span className="status-pill status-zero text-[10px]"><Heart className="w-3 h-3" />Life-Saving</span>}
+                                        {it.is_crash_cart && <span className="status-pill status-critical text-[10px]"><PackageOpen className="w-3 h-3" />Crash Cart</span>}
                                     </div>
                                 </TableCell>
                                 {canManage && (
@@ -284,7 +279,7 @@ export default function Items() {
                         {filtered.length === 0 && (
                             <TableRow>
                                 <TableCell colSpan={9} className="text-center py-10 text-slate-500">
-                                    لا توجد أصناف
+                                    No items found
                                 </TableCell>
                             </TableRow>
                         )}
