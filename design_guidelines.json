@@ -1,0 +1,92 @@
+{
+  "theme_and_archetype": {
+    "theme": "Light",
+    "archetype": "Archetype 4 (Swiss & High-Contrast) adapted for Health/Medical Operations",
+    "rationale": "For an operational hospital stock management system (ER/ICU), clarity, authority, and function are paramount. While Archetype 1 is typical for health, this is an internal, data-dense staff tool, requiring the precision of Archetype 4 combined with the trustworthy, calm palette of medical applications. It needs to be highly scannable during long shifts."
+  },
+  "typography": {
+    "font_family": {
+      "headings": "'Cairo', sans-serif",
+      "body": "'IBM Plex Sans Arabic', sans-serif"
+    },
+    "scale": {
+      "h1": "text-3xl sm:text-4xl lg:text-5xl tracking-tight font-black",
+      "h2": "text-2xl sm:text-3xl tracking-tight font-bold",
+      "h3": "text-xl sm:text-2xl font-semibold",
+      "h4": "text-lg font-semibold",
+      "body": "text-sm sm:text-base leading-relaxed font-medium",
+      "small_labels": "text-xs tracking-wider uppercase font-bold"
+    },
+    "rules": "Avoid generic Inter. Use 'Cairo' for strong, clear headings and 'IBM Plex Sans Arabic' for easily readable, technical body text and tables. All text must strictly support Arabic script with correct RTL ligature rendering."
+  },
+  "colors": {
+    "background": {
+      "app": "#F8FAFC",
+      "surface": "#FFFFFF",
+      "sidebar": "#0F172A"
+    },
+    "text": {
+      "primary": "#0F172A",
+      "secondary": "#475569",
+      "muted": "#94A3B8",
+      "inverse": "#FFFFFF"
+    },
+    "primary": {
+      "DEFAULT": "#0284C7",
+      "hover": "#0369A1",
+      "light": "#E0F2FE"
+    },
+    "semantic_stock_status": {
+      "zero_level": { "bg": "#FEF2F2", "text": "#DC2626", "border": "#FCA5A5" },
+      "critical_level": { "bg": "#FFFBEB", "text": "#D97706", "border": "#FCD34D" },
+      "backorder": { "bg": "#FAF5FF", "text": "#9333EA", "border": "#D8B4FE" },
+      "available": { "bg": "#F0FDFA", "text": "#0D9488", "border": "#5EEAD4" },
+      "back_in_stock": { "bg": "#EFF6FF", "text": "#2563EB", "border": "#93C5FD" }
+    },
+    "borders": "#E2E8F0",
+    "rules": "Strict adherence to semantic colors for stock status. Zero Level must instantly draw the eye (Red). Use 'Tinted Grey' (Slate) for neutrals. Do not use pure black or pure gray."
+  },
+  "layout_and_spacing": {
+    "dashboard_grid": "MODE B: THE 'CONTROL ROOM' GRID. Tight gaps (gap-4 or gap-6). Summary KPIs span 1 col, primary charts span 2-3 cols, lists span 1 col vertically. Every pixel utilized. h-full on children.",
+    "spacing_scale": "p-4, p-6, p-8. Use generous spacing (p-6/p-8) inside containers with borders.",
+    "rtl_support": "CRITICAL: The entire layout must be RTL. Use logical properties in Tailwind (`ms-` instead of `ml-`, `pe-` instead of `pr-`, `text-start` instead of `text-left`). The sidebar should natively be positioned on the right side."
+  },
+  "surface_styles": {
+    "kpi_cards": "Flat background, crisp 1px border (border-slate-200), no default shadow. On hover: slight lift (-translate-y-1) and subtle shadow (shadow-md).",
+    "data_tables": "Grid Borders (The 'Technical' Look). Use border-collapse. Row borders should be subtle (border-slate-200). Use alternating row colors (bg-slate-50/50) for readability in dense datasets.",
+    "navigation": "Solid Background. Sidebar should be dark (slate-900) to separate navigation clearly from the bright, data-heavy main view."
+  },
+  "components": {
+    "icons": "lucide-react. Use stroke-width 2. Keep sizes consistent (w-5 h-5 for inline, w-8 h-8 for KPIs).",
+    "badges": "Crucial for stock status. Must use the exact semantic colors defined above. Rounded-full or rounded-md with 1px border and light background.",
+    "buttons": "Primary: Solid bg, white text. Secondary: Outline with slate border. Destructive: Solid red. Always include focus rings (focus:ring-2 focus:ring-offset-2).",
+    "tables": "Use Shadcn Table. Customize to be compact (p-2 or p-3 cells) as hospital staff need to see max rows. Sticky header is mandatory for inventory lists."
+  },
+  "motion_and_interaction": {
+    "hover_states": "All interactive rows and buttons must have a subtle background shift (hover:bg-slate-100) or text color change.",
+    "transitions": "transition-all duration-200 ease-in-out for buttons and links.",
+    "accessibility": "Ensure focus states are visible for keyboard navigation."
+  },
+  "media": {
+    "images": {
+      "login_background": {
+        "url": "https://images.unsplash.com/photo-1586773860418-d37222d8fce3?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NTJ8MHwxfHNlYXJjaHwxfHxtb2Rlcm4lMjBob3NwaXRhbCUyMGJ1aWxkaW5nJTIwZXh0ZXJpb3J8ZW58MHx8fHwxNzgxNjIwMDAzfDA&ixlib=rb-4.1.0&q=85",
+        "description": "Modern hospital building exterior, used for the left/right split panel on the login screen."
+      },
+      "brand_logo": {
+        "url": "https://images.unsplash.com/photo-1762939079730-23708c0dd337?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzOTB8MHwxfHNlYXJjaHwxfHxtZWRpY2FsJTIwY3Jvc3MlMjBsb2dvJTIwYmx1ZXxlbnwwfHx8fDE3ODE2MjAwMDR8MA&ixlib=rb-4.1.0&q=85",
+        "description": "Medical cross logo used for the sidebar and login header."
+      }
+    }
+  },
+  "instructions_to_main_agent": [
+    "CRITICAL: Add `dir='rtl'` to the `<html>` or `<body>` tag in index.html.",
+    "CRITICAL: Add 'Cairo' and 'IBM Plex Sans Arabic' via Google Fonts to index.html and update tailwind.config.js to include them.",
+    "CRITICAL: Use standard Tailwind logical properties (`ms-`, `me-`, `ps-`, `pe-`, `text-start`, `text-end`, `border-s`, `border-e`, `rounded-s`, `rounded-e`) to ensure automatic RTL support without hardcoding 'left' or 'right'.",
+    "For Recharts, ensure the Y-axis is on the right side if standard for RTL, or configure the layout appropriately.",
+    "Use `lucide-react` for all icons. Avoid emojis entirely.",
+    "Implement Shadcn UI components but heavily customize the Table to be dense for medical data.",
+    "Do NOT use HTML `<select>` or `<input type='date'>`, use Shadcn Select and Calendar respectively.",
+    "All interactive and key informational elements MUST include a `data-testid` attribute (kebab-case, role-based, e.g., `data-testid='login-submit-button'`)."
+  ]
+}
