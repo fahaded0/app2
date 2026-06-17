@@ -36,8 +36,8 @@ export default function Login() {
             {/* Left side - image panel */}
             <div className="hidden lg:block w-1/2 relative overflow-hidden">
                 <img
-                    src="https://images.unsplash.com/photo-1586773860418-d37222d8fce3?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NTJ8MHwxfHNlYXJjaHwxfHxtb2Rlcm4lMjBob3NwaXRhbCUyMGJ1aWxkaW5nJTIwZXh0ZXJpb3J8ZW58MHx8fHwxNzgxNjIwMDAzfDA&ixlib=rb-4.1.0&q=85"
-                    alt="hospital"
+                    src="https://customer-assets.emergentagent.com/job_reverent-galois-8/artifacts/ii1jbr7e_unnamed.jpg"
+                    alt="Makkah Health Cluster"
                     className="absolute inset-0 w-full h-full object-cover"
                 />
                 <div className="absolute inset-0 bg-gradient-to-b from-slate-900/50 to-sky-900/70" />
