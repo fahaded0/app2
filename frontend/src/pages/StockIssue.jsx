@@ -68,6 +68,7 @@ export default function StockIssue() {
                 item_id: itemId,
                 department_id: departmentId,
                 quantity: Number(quantity),
+                override_reason: overrideReason || null,
             });
             setPreview(r.data);
         } catch (e) {
@@ -273,6 +274,14 @@ export default function StockIssue() {
                                         <div className="font-bold text-slate-800 tabular-nums">{balance.no_issue_threshold}</div>
                                     </div>
                                 </div>
+                            </div>
+                        )}
+                        {!balance && (departmentId || itemId) && (
+                            <div className="rounded-md border border-dashed border-slate-300 bg-slate-50/60 p-3 text-xs text-slate-500"
+                                 data-testid="balance-hint">
+                                {!departmentId
+                                    ? "Select a department to view the current balance."
+                                    : "Select an item to view the current balance and thresholds."}
                             </div>
                         )}
                     </CardContent>

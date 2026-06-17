@@ -585,7 +585,7 @@ async def stock_issue_preview(
     decision = stock_issue.evaluate_issue_decision(
         item=item, threshold=threshold,
         previous_balance=current_balance, projected_balance=projected,
-        user_role=user["role"], override_reason=None,
+        user_role=user["role"], override_reason=body.override_reason,
     )
 
     return {

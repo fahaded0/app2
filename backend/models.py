@@ -185,6 +185,7 @@ class StockIssuePreviewBody(BaseModel):
     item_id: str
     department_id: str
     quantity: int
+    override_reason: Optional[str] = None
 
 
 class StockIssueBody(BaseModel):
