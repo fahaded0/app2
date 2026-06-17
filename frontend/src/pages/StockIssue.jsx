@@ -10,8 +10,9 @@ import {
 } from "@/components/ui/select";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import IssuePreviewCard from "@/components/IssuePreviewCard";
+import BarcodeScanner from "@/components/BarcodeScanner";
 import {
-    Send, Eye, Siren, RotateCcw, PackageMinus, ShieldCheck, ClipboardList, Loader2,
+    Send, Eye, Siren, RotateCcw, PackageMinus, ShieldCheck, ClipboardList, Loader2, ScanBarcode,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -37,6 +38,7 @@ export default function StockIssue() {
     const [loadingPreview, setLoadingPreview] = useState(false);
     const [submitting, setSubmitting] = useState(false);
     const [lastResult, setLastResult] = useState(null);
+    const [scannerOpen, setScannerOpen] = useState(false);
 
     useEffect(() => {
         api.get("/departments").then((r) => setDepartments(r.data));
@@ -59,6 +61,25 @@ export default function StockIssue() {
     );
 
     const canPreview = itemId && departmentId && Number(quantity) > 0;
+
+    function handleScanned(code) {
+        setScannerOpen(false);
+        const trimmed = (code || "").trim();
+        if (!trimmed) return;
+        // Match by barcode, internal_code or GTIN/UDI (case-insensitive)
+        const found = items.find((i) =>
+            (i.barcode && i.barcode.toLowerCase() === trimmed.toLowerCase()) ||
+            (i.internal_code && i.internal_code.toLowerCase() === trimmed.toLowerCase()) ||
+            (i.gtin && i.gtin.toLowerCase() === trimmed.toLowerCase()) ||
+            (i.udi && i.udi.toLowerCase() === trimmed.toLowerCase())
+        );
+        if (found) {
+            setItemId(found.id);
+            toast.success(`Scanned: ${found.internal_code} — ${found.name_en}`);
+        } else {
+            toast.error(`No item found for code "${trimmed}"`);
+        }
+    }
 
     async function runPreview() {
         if (!canPreview) return;
@@ -92,6 +113,11 @@ export default function StockIssue() {
             return;
         }
         setSubmitting(true);
+        // Stable idempotency key per submission attempt — survives transient retries
+        const idempotencyKey =
+            (window.crypto && window.crypto.randomUUID
+                ? window.crypto.randomUUID()
+                : `idem-${Date.now()}-${Math.random().toString(36).slice(2)}`);
         try {
             const payload = {
                 item_id: itemId,
@@ -101,6 +127,7 @@ export default function StockIssue() {
                 notes: notes || null,
                 override_reason: isOverride || force ? overrideReason : null,
                 approval_id: approvalId || null,
+                idempotency_key: idempotencyKey,
             };
             const r = await api.post("/stock/issue", payload);
             setLastResult(r.data);
@@ -188,7 +215,17 @@ export default function StockIssue() {
                         </div>
 
                         <div className="space-y-1.5">
-                            <Label className="text-xs uppercase tracking-wider font-bold text-slate-700">Item</Label>
+                            <div className="flex items-center justify-between">
+                                <Label className="text-xs uppercase tracking-wider font-bold text-slate-700">Item</Label>
+                                <Button
+                                    type="button" variant="ghost" size="sm"
+                                    className="h-7 px-2 text-xs text-sky-700 hover:text-sky-800 hover:bg-sky-50"
+                                    onClick={() => setScannerOpen(true)}
+                                    data-testid="open-scanner-button"
+                                >
+                                    <ScanBarcode className="w-3.5 h-3.5 mr-1" /> Scan
+                                </Button>
+                            </div>
                             <Select value={itemId} onValueChange={setItemId}>
                                 <SelectTrigger data-testid="issue-item-select">
                                     <SelectValue placeholder="Choose item..." />
@@ -415,6 +452,12 @@ export default function StockIssue() {
                     Selected item: <span className="font-mono">{selectedItem.internal_code}</span> • category {selectedItem.category} • unit {selectedItem.unit}
                 </div>
             )}
+
+            <BarcodeScanner
+                open={scannerOpen}
+                onClose={() => setScannerOpen(false)}
+                onScanned={handleScanned}
+            />
         </div>
     );
 }

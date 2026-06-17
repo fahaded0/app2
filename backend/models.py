@@ -196,12 +196,19 @@ class StockIssueBody(BaseModel):
     override_reason: Optional[str] = None
     approval_id: Optional[str] = None
     notes: Optional[str] = None
+    idempotency_key: Optional[str] = None
 
 
 # ---------- Escalation recipients ----------
 class EscalationRecipientUpdate(BaseModel):
     role: str
     email: Optional[str] = None
+
+
+# ---------- Report Email ----------
+class ReportEmailBody(BaseModel):
+    recipients: list[str]
+    message: Optional[str] = None
 
 
 # ---------- Requests ----------

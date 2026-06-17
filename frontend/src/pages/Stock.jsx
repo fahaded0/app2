@@ -14,8 +14,9 @@ import {
 } from "@/components/ui/dialog";
 import { StatusBadge } from "@/components/StatusBadge";
 import { useAuth, hasRole } from "@/lib/auth";
-import { Heart, Pencil, FilePlus2 } from "lucide-react";
+import { Heart, Pencil, FilePlus2, ScanBarcode } from "lucide-react";
 import { toast } from "sonner";
+import BarcodeScanner from "@/components/BarcodeScanner";
 
 export default function Stock() {
     const { user } = useAuth();
@@ -37,6 +38,26 @@ export default function Stock() {
     const [newDept, setNewDept] = useState("");
     const [newItem, setNewItem] = useState("");
     const [newBalance, setNewBalance] = useState(0);
+    const [scannerOpen, setScannerOpen] = useState(false);
+
+    function handleScanned(code) {
+        setScannerOpen(false);
+        const trimmed = (code || "").trim();
+        if (!trimmed) return;
+        const found = items.find((i) =>
+            (i.barcode && i.barcode.toLowerCase() === trimmed.toLowerCase()) ||
+            (i.internal_code && i.internal_code.toLowerCase() === trimmed.toLowerCase()) ||
+            (i.gtin && i.gtin.toLowerCase() === trimmed.toLowerCase()) ||
+            (i.udi && i.udi.toLowerCase() === trimmed.toLowerCase())
+        );
+        if (found) {
+            setNewItem(found.id);
+            setNewEntryOpen(true);
+            toast.success(`Scanned: ${found.internal_code} — ${found.name_en}`);
+        } else {
+            toast.error(`No item found for code "${trimmed}"`);
+        }
+    }
 
     function loadStock() {
         const params = {};
@@ -92,7 +113,12 @@ export default function Stock() {
             <div className="flex items-center justify-between">
                 <h1 className="font-heading text-3xl font-black tracking-tight">Stock Entry &amp; Monitoring</h1>
                 {canEdit && (
-                    <Dialog open={newEntryOpen} onOpenChange={setNewEntryOpen}>
+                    <div className="flex gap-2">
+                        <Button variant="outline" onClick={() => setScannerOpen(true)}
+                                data-testid="stock-scan-button">
+                            <ScanBarcode className="w-4 h-4 mr-2" /> Scan
+                        </Button>
+                        <Dialog open={newEntryOpen} onOpenChange={setNewEntryOpen}>
                         <DialogTrigger asChild>
                             <Button className="bg-sky-600 hover:bg-sky-700" data-testid="new-stock-entry-button">
                                 <FilePlus2 className="w-4 h-4 mr-2" /> New Stock Entry
@@ -136,6 +162,7 @@ export default function Stock() {
                             </DialogFooter>
                         </DialogContent>
                     </Dialog>
+                    </div>
                 )}
             </div>
 
@@ -258,6 +285,12 @@ export default function Stock() {
                     </DialogFooter>
                 </DialogContent>
             </Dialog>
+
+            <BarcodeScanner
+                open={scannerOpen}
+                onClose={() => setScannerOpen(false)}
+                onScanned={handleScanned}
+            />
         </div>
     );
 }

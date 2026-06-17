@@ -1,0 +1,48 @@
+{
+  "summary": "Phase 4 (Idempotency + Reconciliation + Stock Transactions page + Reports Email PDF) tested. Created /app/backend/tests/test_phase4.py with 23 pytest cases — ALL 23 PASS against the deployed preview URL. Phase 3 suite still 22/22. Frontend: Transactions sidebar nav visible for all roles (super_admin, dept officer, supply_officer, auditor verified). /stock/transactions renders 121 rows with item+department enrichment, all 6 filter testids present, CSV export downloads stock_transactions_<date>.csv. Reports page: Email PDF button on every card (10 cards) and detail view; dialog opens, recipients/message inputs work, POST /api/reports/zero_level/email returned 200 {status:queued}. Stock Issue page: open-scanner-button opens BarcodeScanner dialog; manual-code-input + manual-code-submit work; typing 'BVM-ADULT' (internal_code) auto-selected that item in the issue-item-select. Stock page: stock-scan-button opens scanner dialog. CRITICAL FRONTEND ISSUE: BarcodeScanner unmount crashes React with NotFoundError (removeChild). Reproducible by opening scanner on a machine without camera, then closing it (via Use button or X). The dev-mode error overlay covers the page; in production this is a hard render error.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "BarcodeScanner.jsx",
+        "issue": "Unmounting the BarcodeScanner dialog crashes React with 'Failed to execute removeChild on Node: The node to be removed is not a child of this node.' This happens deterministically when (a) the underlying html5-qrcode getUserMedia fails (e.g. no camera / permission denied) and (b) the dialog is then closed via close-scanner-button or after manual-code-submit. The crash leaks across to the parent page — the Stock/StockIssue page becomes unresponsive (dev overlay visible; in prod this is a white-screen via React's error boundary chain). Root cause: html5-qrcode's html5QrcodeScanner.clear() removes DOM nodes that React's reconciler has already removed when the Dialog closes. The cleanup must (1) await scanner.clear() BEFORE the dialog/JSX unmounts, or (2) render the scanner region as an uncontrolled ref and call clear() inside a useEffect cleanup that swallows the NotFoundError, or (3) wrap the dialog in a key that forces a clean mount per open. Suggested fix in BarcodeScanner.jsx: in the close handler, call `await scannerRef.current?.clear().catch(()=>{})` THEN setOpen(false), and add a useEffect cleanup with try/catch around clear().",
+        "selector": "[data-testid=barcode-scanner-dialog]",
+        "priority": "HIGH"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase4.py",
+    "/app/test_reports/pytest/phase4_results.xml"
+  ],
+  "action_items": [
+    "FIX BarcodeScanner unmount crash: wrap html5QrcodeScanner.clear() in try/catch and await it before the dialog unmounts. Reproduce on a desktop without webcam by opening Stock Issue → click Scan → click Use after manual entry, OR click X (close-scanner-button). The page hangs on the runtime error overlay until reload.",
+    "(Optional defensive) Add a React error boundary around <BarcodeScanner/> so a scanner DOM mismatch does not take down the parent route.",
+    "(Optional UX) Show a helpful message inside the scanner dialog when getUserMedia fails ('No camera detected — please type the barcode manually below') so the visible 'Error getting userMedia, error = NotFoundError' is friendlier."
+  ],
+  "critical_code_review_comments": [
+    "server.py is now ~1927 lines — already flagged in iteration 3, still not split. New /admin/reconcile-stock, /admin/reconciliation-log, /reports/{name}/email, /stock/transactions endpoints all in the same file. Strongly recommend a routers/ split.",
+    "Idempotency block in server.py:700-763 does TWO reads of stock_transactions for the duplicate path (one pre-insert, one on DuplicateKeyError). The pre-insert read is a TOCTOU race — between the find_one and insert_one a concurrent request could race. The unique-index DuplicateKeyError catch covers correctness, so the pre-insert read is redundant overhead; consider removing it to halve the DB latency on the hot path.",
+    "/admin/reconcile-stock uses require_roles('super_admin','digital_health_manager') — request spec said 'super_admin only' but the implementation also allows digital_health_manager. The spec/impl mismatch should be reconciled (the dept officer & supply_officer 403 cases ARE covered, so no security regression).",
+    "/reports/{report_name}/email sends the PDF as a base64 attachment via Resend in a BackgroundTask — there is no retry/dead-letter on failure. If the Resend API call throws, the audit log already records 'queued' but the user gets no failure signal. Consider persisting an email_jobs collection with status=queued|sent|failed for observability.",
+    "/stock/transactions enrichment does N+1 queries (one item + one department fetch per unseen id). With limit=2000 and a diverse dataset this can be slow. Use a single $in batch query for items and departments after collecting unique ids."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase4.py (new — 23 Phase 4 tests, all passing)"
+  ],
+  "success_rate": {
+    "backend": "23/23 (100%) on Phase 4 suite. Phase 3 suite re-run: 22/22 (100%). Total 45/45 backend tests pass.",
+    "frontend": "~80% — all required Phase 4 data-testids confirmed present and wired. Transactions page rows enriched and CSV downloads. Reports Email dialog works end-to-end with backend (200/queued). Stock Issue scanner button + manual-code path auto-selects item. Sidebar nav-stock-transactions visible for all 4 roles tested. The 20% deduction is the HIGH-priority BarcodeScanner unmount crash that breaks the parent page after close on machines without a camera (most CI/headless environments)."
+  },
+  "test_credentials": "From /app/memory/test_credentials.md — admin@medstock.sa, officer.er@medstock.sa, officer.icu@medstock.sa, supply@medstock.sa, auditor@medstock.sa all working.",
+  "seed_data_creation": "Restocked BVM-ADULT @ ER to balance=50 at the start of the idempotency suite. Created TEST_idem_<uuid> idempotency keys (3 unique) — left in DB harmlessly. Issued small qty=1/2/5 from BVM-ADULT @ ER several times (final balance ~36-40 depending on test order).",
+  "retest_needed": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "test_phase4.py covers: idempotency replay (same key returns same txn, balance unchanged), no-key path (server-generated), two different keys → two txns; reconcile RBAC (super_admin 200, dept_officer/supply_officer 403); reconciliation-log RBAC (super_admin/auditor 200, dept_officer 403); /stock/transactions filters + dept-scoping + item/department enrichment; /reports/{name}/email RBAC (super_admin/supply_officer/auditor 200, dept_officer 403) + 400 on no valid recipient; regression on /items, /stock, /alerts, /dashboard/kpis, /reports. The /stock-balance endpoint is PATH-PARAM (/stock-balance/{dept_id}/{item_id}) not query-param, and the balance field is named 'current_balance' (not 'balance') — kept compatibility in the test. Token field in /auth/login response is 'access_token' (not 'token').",
+  "rca_of_the_issue": "BarcodeScanner crash RCA: html5-qrcode library directly manipulates the DOM inside its mount target. When React's Dialog component unmounts the scanner subtree, the library's own teardown via Html5QrcodeScanner.clear() tries to removeChild() on nodes that React already detached. The exception bubbles up to React's reconciler and triggers the dev-overlay (and in prod the nearest error boundary). Mitigation: (1) call scannerRef.current.clear().catch(()=>{}) BEFORE calling setOpen(false) in the close handlers; (2) attach the scanner to a ref-controlled <div> that is rendered OUTSIDE the Dialog's animated mount/unmount tree, or rendered only once and toggled visibility-only; (3) wrap <BarcodeScanner> in a React Error Boundary so even if the DOM mismatch recurs it cannot poison the parent route."
+}

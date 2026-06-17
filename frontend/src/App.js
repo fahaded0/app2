@@ -12,6 +12,7 @@ import Items from "@/pages/Items";
 import ImportItems from "@/pages/ImportItems";
 import Stock from "@/pages/Stock";
 import StockIssue from "@/pages/StockIssue";
+import StockTransactions from "@/pages/StockTransactions";
 import Requests from "@/pages/Requests";
 import Alerts from "@/pages/Alerts";
 import Reports from "@/pages/Reports";
@@ -60,6 +61,7 @@ function App() {
                                 <StockIssue />
                             </RoleGuard>
                         } />
+                        <Route path="/stock/transactions" element={<StockTransactions />} />
                         <Route path="/requests" element={<Requests />} />
                         <Route path="/alerts" element={<Alerts />} />
                         <Route path="/reports" element={<Reports />} />

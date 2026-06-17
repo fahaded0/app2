@@ -125,6 +125,74 @@ async def send_alert_email(
         return None
 
 
+async def send_report_email(
+    to: Iterable[str],
+    *,
+    report_title: str,
+    sender_name: str,
+    message_body: str,
+    pdf_bytes: bytes,
+    pdf_filename: str,
+) -> Optional[str]:
+    """Send a report as a PDF attachment via Resend.
+
+    Resend expects attachments encoded as base64 strings.
+    """
+    if not _API_KEY:
+        logger.warning("RESEND_API_KEY not set — skipping report email")
+        return None
+    recipients = sorted({e.strip().lower() for e in to if e and "@" in e})
+    if not recipients:
+        return None
+    import base64
+    encoded = base64.b64encode(pdf_bytes).decode("ascii")
+    html = f"""
+<!doctype html>
+<html><body style="margin:0;padding:0;background:#F1F5F9;font-family:-apple-system,Inter,Segoe UI,Arial,sans-serif;">
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#F1F5F9;padding:32px 16px;">
+  <tr><td align="center">
+    <table width="560" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:10px;border:1px solid #E2E8F0;overflow:hidden;">
+      <tr><td style="background:#0284C7;color:#fff;padding:18px 24px;">
+        <div style="font-size:11px;text-transform:uppercase;letter-spacing:2px;font-weight:700;opacity:.85;">Critical Medical Stock Monitor</div>
+        <div style="font-size:20px;font-weight:800;margin-top:4px;">{report_title}</div>
+      </td></tr>
+      <tr><td style="padding:24px;">
+        <p style="margin:0 0 12px 0;font-size:14px;color:#334155;line-height:1.6;">
+          {message_body.replace(chr(10), '<br/>')}
+        </p>
+        <p style="margin:0;font-size:13px;color:#475569;">
+          The full report is attached as <strong>{pdf_filename}</strong>.
+        </p>
+        <p style="margin:22px 0 0 0;font-size:11px;color:#94A3B8;">
+          Sent by {sender_name} via the Critical Medical Stock Monitoring System.
+        </p>
+      </td></tr>
+    </table>
+  </td></tr>
+</table>
+</body></html>
+"""
+    params = {
+        "from": _SENDER,
+        "to": recipients,
+        "subject": f"Report — {report_title}",
+        "html": html,
+        "attachments": [{
+            "filename": pdf_filename,
+            "content": encoded,
+            "content_type": "application/pdf",
+        }],
+    }
+    try:
+        result = await asyncio.to_thread(resend.Emails.send, params)
+        msg_id = (result or {}).get("id")
+        logger.info("Report email sent id=%s to=%s file=%s", msg_id, recipients, pdf_filename)
+        return msg_id
+    except Exception as e:
+        logger.exception("Report email send failed: %s", e)
+        return None
+
+
 # ---------- Escalation recipients ----------
 """
 Stored as a single document keyed by role: {"_id": "...", "role": "supply_officer", "email": "x@y.com"}

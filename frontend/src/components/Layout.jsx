@@ -3,7 +3,7 @@ import { NavLink, useNavigate, Outlet } from "react-router-dom";
 import {
     LayoutDashboard, Boxes, ClipboardList, Bell, FileText,
     History, Users, Building2, LogOut, Stethoscope, Package, ShieldCheck,
-    FileSpreadsheet, Sliders, PackageMinus
+    FileSpreadsheet, Sliders, PackageMinus, Receipt
 } from "lucide-react";
 import { useAuth, hasRole } from "@/lib/auth";
 import { ROLE_LABELS } from "@/lib/api";
@@ -16,6 +16,8 @@ const NAV = [
       roles: ["super_admin","digital_health_manager","department_stock_officer","department_head","supply_officer","auditor","hospital_manager","quality"] },
     { to: "/stock/issue", label: "Stock Issue", icon: PackageMinus, testid: "nav-stock-issue",
       roles: ["super_admin","digital_health_manager","department_stock_officer","department_head","supply_officer","hospital_manager"] },
+    { to: "/stock/transactions", label: "Transactions", icon: Receipt, testid: "nav-stock-transactions",
+      roles: null },
     { to: "/items", label: "Items", icon: Boxes, testid: "nav-items",
       roles: null },
     { to: "/items/import", label: "Excel Import", icon: FileSpreadsheet, testid: "nav-import",

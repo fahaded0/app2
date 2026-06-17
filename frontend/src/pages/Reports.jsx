@@ -1,11 +1,17 @@
 import React, { useEffect, useState } from "react";
-import { api, API, fmtDate } from "@/lib/api";
+import { api, API, fmtDate, formatApiError } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import {
+    Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
+} from "@/components/ui/dialog";
 import {
     AlertCircle, AlertTriangle, Clock, Heart, Barcode, ClipboardList,
     FileSpreadsheet, FileText, History, BarChart3, Activity, Building2,
-    Download
+    Download, Mail, Send,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -37,6 +43,46 @@ export default function Reports() {
     const [selected, setSelected] = useState(null);
     const [data, setData] = useState(null);
     const [loading, setLoading] = useState(false);
+
+    // Email-PDF dialog state
+    const [emailOpen, setEmailOpen] = useState(false);
+    const [emailReportKey, setEmailReportKey] = useState(null);
+    const [emailRecipients, setEmailRecipients] = useState("");
+    const [emailMessage, setEmailMessage] = useState(
+        "Please find the latest report attached for your review."
+    );
+    const [emailSending, setEmailSending] = useState(false);
+
+    function openEmailDialog(key) {
+        setEmailReportKey(key);
+        setEmailRecipients("");
+        setEmailMessage("Please find the latest report attached for your review.");
+        setEmailOpen(true);
+    }
+
+    async function sendEmail() {
+        const recips = emailRecipients
+            .split(/[,\s;]+/)
+            .map((s) => s.trim())
+            .filter((s) => s && s.includes("@"));
+        if (recips.length === 0) {
+            toast.error("Add at least one recipient email");
+            return;
+        }
+        setEmailSending(true);
+        try {
+            await api.post(`/reports/${emailReportKey}/email`, {
+                recipients: recips,
+                message: emailMessage || null,
+            });
+            toast.success(`Report queued for delivery to ${recips.length} recipient${recips.length > 1 ? "s" : ""}`);
+            setEmailOpen(false);
+        } catch (e) {
+            toast.error(formatApiError(e));
+        } finally {
+            setEmailSending(false);
+        }
+    }
 
     useEffect(() => {
         api.get("/reports").then((r) => setCatalog(r.data));
@@ -121,6 +167,11 @@ export default function Reports() {
                                                 className="h-8 px-2 text-xs text-red-700 border-red-300">
                                             <FileText className="w-3 h-3 mr-1" /> PDF
                                         </Button>
+                                        <Button onClick={() => openEmailDialog(r.key)} variant="outline" size="sm"
+                                                data-testid={`email-pdf-${r.key}`} title="Email PDF to manager"
+                                                className="h-8 px-2 text-xs text-sky-700 border-sky-300">
+                                            <Mail className="w-3 h-3 mr-1" /> Email
+                                        </Button>
                                     </div>
                                 </div>
                             </CardContent>
@@ -158,6 +209,11 @@ export default function Reports() {
                                     className="text-red-700 border-red-300">
                                 <FileText className="w-3.5 h-3.5 mr-1.5" /> PDF
                             </Button>
+                            <Button onClick={() => openEmailDialog(selected)} variant="outline" size="sm"
+                                    className="text-sky-700 border-sky-300"
+                                    data-testid={`email-pdf-detail-${selected}`}>
+                                <Mail className="w-3.5 h-3.5 mr-1.5" /> Email
+                            </Button>
                         </div>
                     </CardHeader>
                     <CardContent className="p-0">
@@ -192,6 +248,50 @@ export default function Reports() {
                     </CardContent>
                 </Card>
             )}
+
+            {/* Email PDF dialog */}
+            <Dialog open={emailOpen} onOpenChange={setEmailOpen}>
+                <DialogContent className="max-w-md" data-testid="email-report-dialog">
+                    <DialogHeader>
+                        <DialogTitle className="flex items-center gap-2">
+                            <Mail className="w-5 h-5 text-sky-600" /> Email PDF Report
+                        </DialogTitle>
+                        <DialogDescription>
+                            The report PDF will be generated server-side and emailed as an attachment via Resend.
+                        </DialogDescription>
+                    </DialogHeader>
+                    <div className="space-y-3">
+                        <div>
+                            <Label className="text-xs font-bold">Recipients</Label>
+                            <Input
+                                placeholder="e.g. manager@hospital.sa, supply@hospital.sa"
+                                value={emailRecipients}
+                                onChange={(e) => setEmailRecipients(e.target.value)}
+                                data-testid="email-recipients-input"
+                            />
+                            <p className="text-[11px] text-slate-500 mt-1">Separate multiple addresses with commas, spaces or semicolons.</p>
+                        </div>
+                        <div>
+                            <Label className="text-xs font-bold">Message <span className="text-slate-400 font-normal">(optional)</span></Label>
+                            <Textarea
+                                rows={4}
+                                value={emailMessage}
+                                onChange={(e) => setEmailMessage(e.target.value)}
+                                data-testid="email-message-input"
+                            />
+                        </div>
+                    </div>
+                    <DialogFooter>
+                        <Button variant="outline" onClick={() => setEmailOpen(false)}>Cancel</Button>
+                        <Button onClick={sendEmail} disabled={emailSending}
+                                className="bg-sky-600 hover:bg-sky-700"
+                                data-testid="send-email-report-button">
+                            <Send className="w-4 h-4 mr-2" />
+                            {emailSending ? "Sending..." : "Send"}
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
         </div>
     );
 }

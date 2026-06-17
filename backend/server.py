@@ -13,6 +13,7 @@ from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Respons
 from fastapi.responses import StreamingResponse
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo.errors import DuplicateKeyError
 import io
 import csv
 
@@ -41,7 +42,7 @@ from models import (
     StockEntryUpdate, StockRequestCreate,
     ApproveBody, RejectBody, DispatchBody, ReceiveBody,
     ThresholdUpdate, StockIssuePreviewBody, StockIssueBody,
-    EscalationRecipientUpdate,
+    EscalationRecipientUpdate, ReportEmailBody,
     _new_id, _now_iso,
 )
 from seed import seed as seed_data
@@ -491,6 +492,11 @@ async def upsert_stock(
 async def list_transactions(
     item_id: Optional[str] = None,
     department_id: Optional[str] = None,
+    entry_type: Optional[str] = None,
+    override_only: bool = False,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    limit: int = 500,
     user: dict = Depends(get_current_user),
 ):
     q: dict = {}
@@ -498,7 +504,36 @@ async def list_transactions(
         q["item_id"] = item_id
     if department_id:
         q["department_id"] = department_id
-    docs = await db.stock_transactions.find(q, {"_id": 0}).sort("created_at", -1).limit(500).to_list(500)
+    if entry_type:
+        q["entry_type"] = entry_type
+    if override_only:
+        q["override_flag"] = True
+    if date_from or date_to:
+        rng: dict = {}
+        if date_from:
+            rng["$gte"] = date_from
+        if date_to:
+            rng["$lte"] = date_to
+        q["created_at"] = rng
+    # Department staff: limit to their own department
+    if user["role"] in ("department_stock_officer", "department_head") and user.get("department_id"):
+        q["department_id"] = user["department_id"]
+    limit = max(1, min(int(limit), 2000))
+    docs = await db.stock_transactions.find(q, {"_id": 0}).sort("created_at", -1).limit(limit).to_list(limit)
+
+    # Enrich with item + department info (small denormalised payload — same pattern as /stock)
+    item_map: dict = {}
+    dept_map: dict = {}
+    for d in docs:
+        if d.get("item_id") and d["item_id"] not in item_map:
+            it = await db.items.find_one({"id": d["item_id"]}, {"_id": 0})
+            item_map[d["item_id"]] = it
+        if d.get("department_id") and d["department_id"] not in dept_map:
+            dept_map[d["department_id"]] = await db.departments.find_one(
+                {"id": d["department_id"]}, {"_id": 0}
+            )
+        d["item"] = item_map.get(d.get("item_id"))
+        d["department"] = dept_map.get(d.get("department_id"))
     return docs
 
 
@@ -658,16 +693,76 @@ async def stock_issue_execute(
             and decision["rule"] != "emergency_override"):
         raise HTTPException(status_code=400, detail=decision["message"])
 
+    # ----- IDEMPOTENCY -----
+    # The transaction is the source of truth. We insert it first with a unique
+    # `idempotency_key`. A duplicate-key error means the same request was already
+    # processed — we return the stored prior result and skip all side effects.
+    idem_key = body.idempotency_key or _new_id()
+    prior = await db.stock_transactions.find_one({"idempotency_key": idem_key}, {"_id": 0})
+    if prior:
+        return {
+            "success": True,
+            "idempotent_replay": True,
+            "entry_id": prior.get("entry_id"),
+            "transaction_id": prior["id"],
+            "previous_balance": prior["previous_balance"],
+            "current_balance": prior["new_balance"],
+            "status": prior.get("status"),
+            "decision": {"rule": prior.get("decision_rule"), "override": prior.get("override_flag")},
+            "alert_id": prior.get("alert_id"),
+            "alert_severity": prior.get("alert_severity"),
+        }
+
     # Compute new status using the per-department threshold model
-    new_status = stock_issue.calc_status(projected, threshold)
-    if new_status not in ("available", "below_minimum", "critical_level", "zero_level"):
-        new_status = "available"
-    # The stock_entries schema only accepts these statuses; map below_minimum → available label
     db_status = "zero_level" if projected == 0 else (
         "critical_level" if projected < threshold["critical_level"] else "available"
     )
 
-    # 1. Update stock_entries (latest balance)
+    # 1. Insert transaction FIRST (with idempotency guard via unique index)
+    txn_id = _new_id()
+    txn_doc = {
+        "id": txn_id,
+        "idempotency_key": idem_key,
+        "department_id": body.department_id,
+        "item_id": body.item_id,
+        "entry_type": "issue",
+        "quantity_change": -body.quantity,
+        "previous_balance": previous_balance,
+        "new_balance": projected,
+        "delta": -body.quantity,
+        "status": db_status,
+        "user_id": user["id"],
+        "user_name": user["full_name"],
+        "created_at": _now_iso(),
+        "reason": body.notes,
+        "reference_no": body.reference_no,
+        "override_flag": decision["override"],
+        "override_reason": body.override_reason if decision["override"] else None,
+        "approval_id": body.approval_id,
+        "decision_rule": decision["rule"],
+        "alert_id": None,         # filled below
+        "alert_severity": None,
+        "entry_id": None,
+    }
+    try:
+        await db.stock_transactions.insert_one(txn_doc)
+    except DuplicateKeyError:
+        # Concurrent duplicate — fetch and return the stored prior result.
+        prior = await db.stock_transactions.find_one({"idempotency_key": idem_key}, {"_id": 0})
+        return {
+            "success": True,
+            "idempotent_replay": True,
+            "entry_id": prior.get("entry_id"),
+            "transaction_id": prior["id"],
+            "previous_balance": prior["previous_balance"],
+            "current_balance": prior["new_balance"],
+            "status": prior.get("status"),
+            "decision": {"rule": prior.get("decision_rule"), "override": prior.get("override_flag")},
+            "alert_id": prior.get("alert_id"),
+            "alert_severity": prior.get("alert_severity"),
+        }
+
+    # 2. Update stock_entries (latest balance)
     entry_doc = {
         "department_id": body.department_id,
         "item_id": body.item_id,
@@ -687,29 +782,8 @@ async def stock_issue_execute(
     else:
         entry_id = _new_id()
         await db.stock_entries.insert_one({"id": entry_id, **entry_doc})
-
-    # 2. Record the issue transaction (immutable history)
-    txn_id = _new_id()
-    await db.stock_transactions.insert_one({
-        "id": txn_id,
-        "department_id": body.department_id,
-        "item_id": body.item_id,
-        "entry_type": "issue",
-        "quantity_change": -body.quantity,
-        "previous_balance": previous_balance,
-        "new_balance": projected,
-        "delta": -body.quantity,
-        "status": db_status,
-        "user_id": user["id"],
-        "user_name": user["full_name"],
-        "created_at": _now_iso(),
-        "reason": body.notes,
-        "reference_no": body.reference_no,
-        "override_flag": decision["override"],
-        "override_reason": body.override_reason if decision["override"] else None,
-        "approval_id": body.approval_id,
-        "decision_rule": decision["rule"],
-    })
+    # Back-fill entry_id on the transaction for traceability
+    await db.stock_transactions.update_one({"id": txn_id}, {"$set": {"entry_id": entry_id}})
 
     # 3. Create alert + escalation if needed
     alert_doc = None
@@ -735,6 +809,11 @@ async def stock_issue_execute(
         )
         alert_doc["id"] = alert_id
         await db.alerts.insert_one(alert_doc)
+        # Back-fill alert details on the transaction for replay support
+        await db.stock_transactions.update_one(
+            {"id": txn_id},
+            {"$set": {"alert_id": alert_id, "alert_severity": sev}},
+        )
 
         # Email escalation in background
         if decision["escalate_to"]:
@@ -846,6 +925,25 @@ async def upsert_item_threshold(
         entity_id=doc["id"], new_value=body.model_dump(), request=request,
     )
     return doc
+
+
+# ===== Stock Balance Reconciliation =====
+@api.post("/admin/reconcile-stock")
+async def admin_reconcile_stock(
+    user: dict = Depends(require_roles("super_admin", "digital_health_manager")),
+):
+    """Trigger an on-demand reconciliation run and return discrepancies."""
+    discrepancies = await scheduler_mod.reconcile_stock_balances(db)
+    return {"checked_at": _now_iso(), "count": len(discrepancies), "discrepancies": discrepancies}
+
+
+@api.get("/admin/reconciliation-log")
+async def admin_reconciliation_log(
+    user: dict = Depends(require_roles("super_admin", "digital_health_manager", "auditor")),
+    limit: int = 50,
+):
+    docs = await db.reconciliation_log.find({}, {"_id": 0}).sort("checked_at", -1).limit(limit).to_list(limit)
+    return docs
 
 
 # ===== Escalation Recipients =====
@@ -1719,6 +1817,44 @@ async def export_report_pdf(report_name: str, user: dict = Depends(get_current_u
     )
 
 
+@api.post("/reports/{report_name}/email")
+async def email_report(
+    report_name: str,
+    body: ReportEmailBody,
+    background: BackgroundTasks,
+    request: Request,
+    user: dict = Depends(require_roles(
+        "super_admin", "digital_health_manager", "hospital_manager",
+        "supply_officer", "auditor",
+    )),
+):
+    """Generate the report PDF and email it (with attachment) to the supplied recipients."""
+    recipients = [e.strip().lower() for e in body.recipients if e and "@" in e]
+    if not recipients:
+        raise HTTPException(status_code=400, detail="Provide at least one valid recipient email")
+    headers, rows, meta = await _build_report(report_name, user)
+    title = meta.get("title", REPORT_TITLES.get(report_name, report_name))
+    blob = build_pdf(title, headers, rows, meta)
+    filename = f"{report_name}.pdf"
+    msg = body.message or "Please find the latest report attached for your review."
+
+    background.add_task(
+        email_service.send_report_email,
+        recipients,
+        report_title=title,
+        sender_name=user.get("full_name", "System"),
+        message_body=msg,
+        pdf_bytes=blob,
+        pdf_filename=filename,
+    )
+    await write_audit(
+        user, "email_report", "reports", entity_id=report_name,
+        new_value={"recipients": recipients, "message_preview": msg[:120]},
+        request=request,
+    )
+    return {"status": "queued", "recipients": recipients, "report": report_name}
+
+
 # ----- Health -----
 @api.get("/")
 async def root():
@@ -1751,6 +1887,10 @@ async def startup():
     await db.items.create_index("barcode")
     await db.departments.create_index("code", unique=True)
     await db.stock_entries.create_index([("department_id", 1), ("item_id", 1)], unique=True)
+    await db.stock_transactions.create_index(
+        "idempotency_key", unique=True,
+        partialFilterExpression={"idempotency_key": {"$type": "string"}},
+    )
     await db.item_department_thresholds.create_index(
         [("item_id", 1), ("department_id", 1)], unique=True
     )
@@ -1774,10 +1914,11 @@ async def startup():
             "escalations": [],
         }}],
     )
-    # Launch SLA scheduler in background
+    # Launch SLA scheduler + reconciliation job in background
     import asyncio
     app.state.scheduler_task = asyncio.create_task(scheduler_mod.scheduler_loop(db))
-    logger.info("SLA scheduler launched.")
+    app.state.reconcile_task = asyncio.create_task(scheduler_mod._reconciliation_loop(db))
+    logger.info("SLA scheduler + reconciliation job launched.")
 
 
 @app.on_event("shutdown")
