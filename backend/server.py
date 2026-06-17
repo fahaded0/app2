@@ -33,6 +33,8 @@ from state_machine import validate_request_transition, validate_alert_transition
 from settings_store import get_settings, update_settings
 import scheduler as scheduler_mod
 import excel_import
+import stock_issue
+import email_service
 from models import (
     UserCreate, UserUpdate, LoginBody,
     DepartmentCreate, ItemCreate, ItemUpdate,
