@@ -169,6 +169,40 @@ class StockEntryUpdate(BaseModel):
     notes: Optional[str] = None
 
 
+# ---------- Per-department thresholds (issue workflow) ----------
+class ThresholdUpdate(BaseModel):
+    minimum_level: int
+    critical_level: int
+    emergency_reserve_level: int
+    no_issue_threshold: int
+    allow_emergency_override: bool = True
+    requires_approval_below_reserve: bool = True
+    escalation_minutes: int = 30
+
+
+# ---------- Issue workflow payloads ----------
+class StockIssuePreviewBody(BaseModel):
+    item_id: str
+    department_id: str
+    quantity: int
+
+
+class StockIssueBody(BaseModel):
+    item_id: str
+    department_id: str
+    quantity: int
+    reference_no: Optional[str] = None
+    override_reason: Optional[str] = None
+    approval_id: Optional[str] = None
+    notes: Optional[str] = None
+
+
+# ---------- Escalation recipients ----------
+class EscalationRecipientUpdate(BaseModel):
+    role: str
+    email: Optional[str] = None
+
+
 # ---------- Requests ----------
 RequestStatus = Literal[
     "pending_approval",
@@ -239,6 +273,9 @@ AlertType = Literal[
     "repeated_stockout",
     "life_saving_item",
     "missing_barcode",
+    "below_minimum_issue",
+    "below_critical_issue",
+    "emergency_override",
 ]
 
 class AlertEvent(BaseModel):

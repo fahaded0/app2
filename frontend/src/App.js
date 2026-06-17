@@ -11,6 +11,7 @@ import Dashboard from "@/pages/Dashboard";
 import Items from "@/pages/Items";
 import ImportItems from "@/pages/ImportItems";
 import Stock from "@/pages/Stock";
+import StockIssue from "@/pages/StockIssue";
 import Requests from "@/pages/Requests";
 import Alerts from "@/pages/Alerts";
 import Reports from "@/pages/Reports";
@@ -54,6 +55,11 @@ function App() {
                             </RoleGuard>
                         } />
                         <Route path="/stock" element={<Stock />} />
+                        <Route path="/stock/issue" element={
+                            <RoleGuard roles={["super_admin","digital_health_manager","hospital_manager","department_stock_officer","department_head","supply_officer"]}>
+                                <StockIssue />
+                            </RoleGuard>
+                        } />
                         <Route path="/requests" element={<Requests />} />
                         <Route path="/alerts" element={<Alerts />} />
                         <Route path="/reports" element={<Reports />} />

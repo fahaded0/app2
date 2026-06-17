@@ -9,7 +9,7 @@ import logging
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -40,6 +40,8 @@ from models import (
     DepartmentCreate, ItemCreate, ItemUpdate,
     StockEntryUpdate, StockRequestCreate,
     ApproveBody, RejectBody, DispatchBody, ReceiveBody,
+    ThresholdUpdate, StockIssuePreviewBody, StockIssueBody,
+    EscalationRecipientUpdate,
     _new_id, _now_iso,
 )
 from seed import seed as seed_data
@@ -498,6 +500,377 @@ async def list_transactions(
         q["department_id"] = department_id
     docs = await db.stock_transactions.find(q, {"_id": 0}).sort("created_at", -1).limit(500).to_list(500)
     return docs
+
+
+# ===== STOCK ISSUE (Reserve Control + Escalation) =====
+def _decision_severity_to_alert(severity: str) -> str:
+    """Map decision severity → alert severity literal."""
+    return {
+        "info":     "info",
+        "warning":  "warning",
+        "danger":   "danger",
+        "critical": "critical",
+    }.get(severity, "warning")
+
+
+def _decision_to_alert_type(rule: str) -> str:
+    return {
+        "below_minimum":      "below_minimum_issue",
+        "below_critical":     "below_critical_issue",
+        "emergency_override": "emergency_override",
+    }.get(rule, "critical_level")
+
+
+async def _send_escalation_email_background(
+    bg: BackgroundTasks, db_, *,
+    roles: list[str], title: str, severity: str, message: str,
+    department_code: str, item_name: str, extra_rows: list[tuple[str, str]],
+):
+    recipients = await email_service.resolve_recipients_for_roles(db_, roles)
+    if not recipients:
+        return
+    bg.add_task(
+        email_service.send_alert_email,
+        recipients,
+        title=title,
+        severity=severity,
+        message=message,
+        department=department_code,
+        item=item_name,
+        extra_rows=extra_rows,
+    )
+
+
+@api.get("/stock-balance/{department_id}/{item_id}")
+async def get_stock_balance_endpoint(
+    department_id: str,
+    item_id: str,
+    user: dict = Depends(get_current_user),
+):
+    # Department officers can only read their own department
+    if user["role"] in ("department_stock_officer", "department_head"):
+        if user.get("department_id") != department_id:
+            raise HTTPException(status_code=403, detail="Cannot read stock for another department")
+    return await stock_issue.get_stock_balance(db, item_id, department_id)
+
+
+@api.post("/stock/issue/preview")
+async def stock_issue_preview(
+    body: StockIssuePreviewBody,
+    user: dict = Depends(require_roles(
+        "super_admin", "department_stock_officer", "department_head",
+        "supply_officer", "hospital_manager", "digital_health_manager",
+    )),
+):
+    if body.quantity <= 0:
+        raise HTTPException(status_code=400, detail="Quantity must be greater than zero")
+
+    if user["role"] in ("department_stock_officer", "department_head"):
+        if user.get("department_id") != body.department_id:
+            raise HTTPException(status_code=403, detail="Cannot issue stock for another department")
+
+    item = await db.items.find_one({"id": body.item_id}, {"_id": 0})
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    dept = await db.departments.find_one({"id": body.department_id}, {"_id": 0})
+    if not dept:
+        raise HTTPException(status_code=404, detail="Department not found")
+
+    threshold = await stock_issue.ensure_threshold(db, body.item_id, body.department_id)
+    balance_doc = await stock_issue.get_stock_balance(db, body.item_id, body.department_id)
+    current_balance = balance_doc["current_balance"]
+    projected = current_balance - body.quantity
+
+    insufficient = projected < 0
+    decision = stock_issue.evaluate_issue_decision(
+        item=item, threshold=threshold,
+        previous_balance=current_balance, projected_balance=projected,
+        user_role=user["role"], override_reason=None,
+    )
+
+    return {
+        "current_balance": current_balance,
+        "requested_quantity": body.quantity,
+        "projected_balance": projected,
+        "insufficient_stock": insufficient,
+        "minimum_level": threshold["minimum_level"],
+        "critical_level": threshold["critical_level"],
+        "emergency_reserve_level": threshold["emergency_reserve_level"],
+        "no_issue_threshold": threshold["no_issue_threshold"],
+        "is_life_saving": bool(item.get("is_life_saving")),
+        "allow_emergency_override": bool(threshold.get("allow_emergency_override")),
+        "decision": decision,
+        "item": {"id": item["id"], "internal_code": item["internal_code"],
+                 "name_en": item.get("name_en"), "name_ar": item.get("name_ar")},
+        "department": {"id": dept["id"], "code": dept["code"],
+                       "name_en": dept.get("name_en"), "name_ar": dept.get("name_ar")},
+    }
+
+
+@api.post("/stock/issue")
+async def stock_issue_execute(
+    body: StockIssueBody,
+    request: Request,
+    background: BackgroundTasks,
+    user: dict = Depends(require_roles(
+        "super_admin", "department_stock_officer", "department_head",
+        "supply_officer", "hospital_manager", "digital_health_manager",
+    )),
+):
+    if body.quantity <= 0:
+        raise HTTPException(status_code=400, detail="Quantity must be greater than zero")
+
+    if user["role"] in ("department_stock_officer", "department_head"):
+        if user.get("department_id") != body.department_id:
+            raise HTTPException(status_code=403, detail="Cannot issue stock for another department")
+
+    item = await db.items.find_one({"id": body.item_id}, {"_id": 0})
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    dept = await db.departments.find_one({"id": body.department_id}, {"_id": 0})
+    if not dept:
+        raise HTTPException(status_code=404, detail="Department not found")
+
+    threshold = await stock_issue.ensure_threshold(db, body.item_id, body.department_id)
+    existing = await db.stock_entries.find_one(
+        {"department_id": body.department_id, "item_id": body.item_id}
+    )
+    previous_balance = existing["balance"] if existing else 0
+    projected = previous_balance - body.quantity
+
+    if projected < 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Insufficient stock. Current balance: {previous_balance}, requested: {body.quantity}",
+        )
+
+    decision = stock_issue.evaluate_issue_decision(
+        item=item, threshold=threshold,
+        previous_balance=previous_balance, projected_balance=projected,
+        user_role=user["role"], override_reason=body.override_reason,
+    )
+
+    if decision["block"]:
+        raise HTTPException(status_code=400, detail=decision["message"])
+
+    # Block emergency override attempts that don't meet the rules
+    if (projected < threshold["no_issue_threshold"]
+            and decision["rule"] != "emergency_override"):
+        raise HTTPException(status_code=400, detail=decision["message"])
+
+    # Compute new status using the per-department threshold model
+    new_status = stock_issue.calc_status(projected, threshold)
+    if new_status not in ("available", "below_minimum", "critical_level", "zero_level"):
+        new_status = "available"
+    # The stock_entries schema only accepts these statuses; map below_minimum → available label
+    db_status = "zero_level" if projected == 0 else (
+        "critical_level" if projected < threshold["critical_level"] else "available"
+    )
+
+    # 1. Update stock_entries (latest balance)
+    entry_doc = {
+        "department_id": body.department_id,
+        "item_id": body.item_id,
+        "balance": projected,
+        "status": db_status,
+        "last_updated_by": user["id"],
+        "last_updated_by_name": user["full_name"],
+        "last_updated_at": _now_iso(),
+        "shortage_start": (existing.get("shortage_start") if existing else None)
+                          if db_status not in ("zero_level", "critical_level")
+                          else (existing.get("shortage_start") if existing and existing.get("shortage_start") else _now_iso()),
+        "notes": body.notes,
+    }
+    if existing:
+        await db.stock_entries.update_one({"id": existing["id"]}, {"$set": entry_doc})
+        entry_id = existing["id"]
+    else:
+        entry_id = _new_id()
+        await db.stock_entries.insert_one({"id": entry_id, **entry_doc})
+
+    # 2. Record the issue transaction (immutable history)
+    txn_id = _new_id()
+    await db.stock_transactions.insert_one({
+        "id": txn_id,
+        "department_id": body.department_id,
+        "item_id": body.item_id,
+        "entry_type": "issue",
+        "quantity_change": -body.quantity,
+        "previous_balance": previous_balance,
+        "new_balance": projected,
+        "delta": -body.quantity,
+        "status": db_status,
+        "user_id": user["id"],
+        "user_name": user["full_name"],
+        "created_at": _now_iso(),
+        "reason": body.notes,
+        "reference_no": body.reference_no,
+        "override_flag": decision["override"],
+        "override_reason": body.override_reason if decision["override"] else None,
+        "approval_id": body.approval_id,
+        "decision_rule": decision["rule"],
+    })
+
+    # 3. Create alert + escalation if needed
+    alert_doc = None
+    if decision["create_alert"]:
+        sev = _decision_severity_to_alert(decision["severity"])
+        atype = _decision_to_alert_type(decision["rule"])
+        title_prefix = "EMERGENCY OVERRIDE" if decision["rule"] == "emergency_override" else (
+            "Critical stock after issue" if decision["rule"] == "below_critical" else "Below minimum after issue"
+        )
+        title = f"{title_prefix} — {item.get('name_en', item.get('internal_code'))}"
+        msg = (f"{decision['message']} Department: {dept['code']}. "
+               f"Balance: {previous_balance} → {projected} (issued {body.quantity}).")
+        if decision["override"] and body.override_reason:
+            msg += f" Override reason: {body.override_reason}."
+
+        alert_id = _new_id()
+        alert_doc = _new_alert(
+            type=atype, severity=sev,
+            title=title, message=msg,
+            department_id=body.department_id, item_id=body.item_id,
+            escalated_to=(decision["escalate_to"][0] if decision["escalate_to"] else None),
+            escalation_level=(1 if decision["escalate_to"] else 0),
+        )
+        alert_doc["id"] = alert_id
+        await db.alerts.insert_one(alert_doc)
+
+        # Email escalation in background
+        if decision["escalate_to"]:
+            extra_rows = [
+                ("Previous balance", str(previous_balance)),
+                ("Issued quantity",  str(body.quantity)),
+                ("New balance",      str(projected)),
+                ("No-issue threshold", str(threshold["no_issue_threshold"])),
+                ("Critical level",   str(threshold["critical_level"])),
+                ("Minimum level",    str(threshold["minimum_level"])),
+                ("Issued by",        user["full_name"]),
+                ("Rule",             decision["rule"]),
+            ]
+            if body.reference_no:
+                extra_rows.append(("Reference", body.reference_no))
+            if decision["override"] and body.override_reason:
+                extra_rows.append(("Override reason", body.override_reason))
+            await _send_escalation_email_background(
+                background, db,
+                roles=decision["escalate_to"],
+                title=title, severity=sev, message=msg,
+                department_code=dept.get("code", ""),
+                item_name=item.get("name_en") or item.get("internal_code"),
+                extra_rows=extra_rows,
+            )
+
+    # 4. Audit log
+    await write_audit(
+        user,
+        "stock_issue_override" if decision["override"] else "stock_issue",
+        "stock_transactions", entity_id=txn_id,
+        old_value={"balance": previous_balance},
+        new_value={"balance": projected, "quantity": body.quantity,
+                   "rule": decision["rule"], "override": decision["override"]},
+        request=request,
+        reason=body.override_reason,
+    )
+
+    return {
+        "success": True,
+        "entry_id": entry_id,
+        "transaction_id": txn_id,
+        "previous_balance": previous_balance,
+        "current_balance": projected,
+        "status": db_status,
+        "decision": decision,
+        "alert_id": alert_doc["id"] if alert_doc else None,
+        "alert_severity": alert_doc["severity"] if alert_doc else None,
+    }
+
+
+# ===== Per-department Item Thresholds =====
+@api.get("/items/{item_id}/thresholds")
+async def list_item_thresholds(
+    item_id: str,
+    user: dict = Depends(get_current_user),
+):
+    item = await db.items.find_one({"id": item_id}, {"_id": 0})
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    rows = await db.item_department_thresholds.find(
+        {"item_id": item_id}, {"_id": 0}
+    ).to_list(500)
+    return rows
+
+
+@api.get("/items/{item_id}/thresholds/{department_id}")
+async def get_item_threshold(
+    item_id: str,
+    department_id: str,
+    user: dict = Depends(get_current_user),
+):
+    return await stock_issue.ensure_threshold(db, item_id, department_id)
+
+
+@api.put("/items/{item_id}/thresholds/{department_id}")
+async def upsert_item_threshold(
+    item_id: str,
+    department_id: str,
+    body: ThresholdUpdate,
+    request: Request,
+    user: dict = Depends(require_roles(
+        "super_admin", "digital_health_manager", "supply_officer", "department_head",
+    )),
+):
+    item = await db.items.find_one({"id": item_id}, {"_id": 0})
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    dept = await db.departments.find_one({"id": department_id}, {"_id": 0})
+    if not dept:
+        raise HTTPException(status_code=404, detail="Department not found")
+
+    if user["role"] == "department_head" and user.get("department_id") != department_id:
+        raise HTTPException(status_code=403, detail="Cannot edit thresholds for another department")
+
+    doc = await stock_issue.upsert_threshold(
+        db, item_id=item_id, department_id=department_id,
+        minimum_level=body.minimum_level,
+        critical_level=body.critical_level,
+        emergency_reserve_level=body.emergency_reserve_level,
+        no_issue_threshold=body.no_issue_threshold,
+        allow_emergency_override=body.allow_emergency_override,
+        requires_approval_below_reserve=body.requires_approval_below_reserve,
+        escalation_minutes=body.escalation_minutes,
+        user_id=user["id"],
+    )
+    await write_audit(
+        user, "upsert_threshold", "item_department_thresholds",
+        entity_id=doc["id"], new_value=body.model_dump(), request=request,
+    )
+    return doc
+
+
+# ===== Escalation Recipients =====
+@api.get("/settings/escalation-recipients")
+async def list_escalation_recipients(
+    user: dict = Depends(require_roles(
+        "super_admin", "digital_health_manager", "hospital_manager", "auditor",
+    )),
+):
+    return await email_service.get_escalation_recipients(db)
+
+
+@api.put("/settings/escalation-recipients")
+async def set_escalation_recipient_endpoint(
+    body: EscalationRecipientUpdate,
+    request: Request,
+    user: dict = Depends(require_roles("super_admin", "digital_health_manager")),
+):
+    await email_service.set_escalation_recipient(db, body.role, body.email)
+    await write_audit(
+        user, "set_escalation_recipient", "escalation_recipients",
+        entity_id=body.role, new_value={"role": body.role, "email": body.email},
+        request=request,
+    )
+    return {"status": "ok"}
 
 
 # ===== REQUESTS =====
@@ -1378,6 +1751,10 @@ async def startup():
     await db.items.create_index("barcode")
     await db.departments.create_index("code", unique=True)
     await db.stock_entries.create_index([("department_id", 1), ("item_id", 1)], unique=True)
+    await db.item_department_thresholds.create_index(
+        [("item_id", 1), ("department_id", 1)], unique=True
+    )
+    await db.escalation_recipients.create_index("role", unique=True)
     await db.stock_requests.create_index("request_number", unique=True)
     await db.alerts.create_index("created_at")
     await db.alerts.create_index("status")

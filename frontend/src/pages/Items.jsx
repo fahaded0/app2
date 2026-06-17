@@ -13,7 +13,7 @@ import { Switch } from "@/components/ui/switch";
 import {
     Table, TableHeader, TableBody, TableRow, TableHead, TableCell
 } from "@/components/ui/table";
-import { Plus, Search, Heart, PackageOpen, Pencil, Barcode } from "lucide-react";
+import { Plus, Search, Heart, PackageOpen, Pencil, Barcode, Sliders } from "lucide-react";
 import { useAuth, hasRole } from "@/lib/auth";
 import { toast } from "sonner";
 
@@ -32,6 +32,7 @@ const EMPTY = {
 export default function Items() {
     const { user } = useAuth();
     const canManage = hasRole(user, "super_admin","digital_health_manager","supply_officer");
+    const canEditThresholds = hasRole(user, "super_admin","digital_health_manager","supply_officer","department_head");
     const [items, setItems] = useState([]);
     const [search, setSearch] = useState("");
     const [categoryFilter, setCategoryFilter] = useState("all");
@@ -39,6 +40,18 @@ export default function Items() {
     const [editing, setEditing] = useState(null);
     const [form, setForm] = useState(EMPTY);
     const [saving, setSaving] = useState(false);
+
+    // Threshold editor
+    const [thresholdOpen, setThresholdOpen] = useState(false);
+    const [thresholdItem, setThresholdItem] = useState(null);
+    const [departments, setDepartments] = useState([]);
+    const [thDeptId, setThDeptId] = useState("");
+    const [thresholdForm, setThresholdForm] = useState({
+        minimum_level: 0, critical_level: 0, emergency_reserve_level: 0,
+        no_issue_threshold: 0, allow_emergency_override: true,
+        requires_approval_below_reserve: true, escalation_minutes: 30,
+    });
+    const [savingThreshold, setSavingThreshold] = useState(false);
 
     function load() {
         const params = {};
@@ -49,6 +62,59 @@ export default function Items() {
 
     useEffect(() => { load(); /* eslint-disable-next-line */ }, [categoryFilter]);
     useEffect(() => { const t = setTimeout(load, 400); return () => clearTimeout(t); /* eslint-disable-next-line */ }, [search]);
+    useEffect(() => {
+        if (canEditThresholds) api.get("/departments").then((r) => setDepartments(r.data));
+    }, [canEditThresholds]);
+
+    async function openThresholds(it) {
+        setThresholdItem(it);
+        setThresholdOpen(true);
+        // pre-pick first department
+        const depts = departments.length ? departments : (await api.get("/departments")).data;
+        if (!departments.length) setDepartments(depts);
+        const firstId = depts[0]?.id || "";
+        setThDeptId(firstId);
+        if (firstId) await loadThresholdFor(it.id, firstId);
+    }
+
+    async function loadThresholdFor(itemId, deptId) {
+        try {
+            const r = await api.get(`/items/${itemId}/thresholds/${deptId}`);
+            setThresholdForm({
+                minimum_level: r.data.minimum_level || 0,
+                critical_level: r.data.critical_level || 0,
+                emergency_reserve_level: r.data.emergency_reserve_level || 0,
+                no_issue_threshold: r.data.no_issue_threshold || 0,
+                allow_emergency_override: r.data.allow_emergency_override ?? true,
+                requires_approval_below_reserve: r.data.requires_approval_below_reserve ?? true,
+                escalation_minutes: r.data.escalation_minutes ?? 30,
+            });
+        } catch (_) {
+            // keep defaults
+        }
+    }
+
+    async function saveThreshold() {
+        if (!thresholdItem || !thDeptId) return;
+        setSavingThreshold(true);
+        try {
+            const payload = {
+                minimum_level: Number(thresholdForm.minimum_level) || 0,
+                critical_level: Number(thresholdForm.critical_level) || 0,
+                emergency_reserve_level: Number(thresholdForm.emergency_reserve_level) || 0,
+                no_issue_threshold: Number(thresholdForm.no_issue_threshold) || 0,
+                allow_emergency_override: !!thresholdForm.allow_emergency_override,
+                requires_approval_below_reserve: !!thresholdForm.requires_approval_below_reserve,
+                escalation_minutes: Number(thresholdForm.escalation_minutes) || 30,
+            };
+            await api.put(`/items/${thresholdItem.id}/thresholds/${thDeptId}`, payload);
+            toast.success("Thresholds saved");
+        } catch (e) {
+            toast.error(formatApiError(e));
+        } finally {
+            setSavingThreshold(false);
+        }
+    }
 
     const filtered = useMemo(() => items, [items]);
 
@@ -291,10 +357,19 @@ export default function Items() {
                                 </TableCell>
                                 {canManage && (
                                     <TableCell>
-                                        <Button variant="ghost" size="sm" onClick={() => openEdit(it)}
-                                                data-testid={`edit-item-${it.id}`}>
-                                            <Pencil className="w-4 h-4" />
-                                        </Button>
+                                        <div className="flex gap-1">
+                                            <Button variant="ghost" size="sm" onClick={() => openEdit(it)}
+                                                    data-testid={`edit-item-${it.id}`}>
+                                                <Pencil className="w-4 h-4" />
+                                            </Button>
+                                            {canEditThresholds && (
+                                                <Button variant="ghost" size="sm" onClick={() => openThresholds(it)}
+                                                        title="Per-department thresholds"
+                                                        data-testid={`thresholds-item-${it.id}`}>
+                                                    <Sliders className="w-4 h-4" />
+                                                </Button>
+                                            )}
+                                        </div>
                                     </TableCell>
                                 )}
                             </TableRow>
@@ -309,6 +384,88 @@ export default function Items() {
                     </TableBody>
                 </Table>
             </div>
+
+            {/* Per-department thresholds dialog */}
+            <Dialog open={thresholdOpen} onOpenChange={setThresholdOpen}>
+                <DialogContent className="max-w-2xl">
+                    <DialogHeader>
+                        <DialogTitle>Per-Department Thresholds</DialogTitle>
+                        <DialogDescription>
+                            Configure issue thresholds for <span className="font-bold">{thresholdItem?.name_en}</span> in each department.
+                            Required ordering: <code>no_issue ≤ reserve ≤ critical ≤ minimum</code>.
+                        </DialogDescription>
+                    </DialogHeader>
+                    <div className="space-y-3">
+                        <div>
+                            <Label className="text-xs font-bold">Department</Label>
+                            <Select value={thDeptId} onValueChange={async (v) => {
+                                setThDeptId(v);
+                                if (thresholdItem) await loadThresholdFor(thresholdItem.id, v);
+                            }}>
+                                <SelectTrigger data-testid="th-dept-select"><SelectValue placeholder="Department" /></SelectTrigger>
+                                <SelectContent>
+                                    {departments.map((d) => (
+                                        <SelectItem key={d.id} value={d.id}>{d.code} — {d.name_en}</SelectItem>
+                                    ))}
+                                </SelectContent>
+                            </Select>
+                        </div>
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                            <div>
+                                <Label className="text-xs font-bold">Minimum</Label>
+                                <Input type="number" min="0" value={thresholdForm.minimum_level}
+                                       data-testid="th-min-input"
+                                       onChange={(e) => setThresholdForm({ ...thresholdForm, minimum_level: e.target.value })} />
+                            </div>
+                            <div>
+                                <Label className="text-xs font-bold">Critical</Label>
+                                <Input type="number" min="0" value={thresholdForm.critical_level}
+                                       data-testid="th-crit-input"
+                                       onChange={(e) => setThresholdForm({ ...thresholdForm, critical_level: e.target.value })} />
+                            </div>
+                            <div>
+                                <Label className="text-xs font-bold">Emergency Reserve</Label>
+                                <Input type="number" min="0" value={thresholdForm.emergency_reserve_level}
+                                       data-testid="th-reserve-input"
+                                       onChange={(e) => setThresholdForm({ ...thresholdForm, emergency_reserve_level: e.target.value })} />
+                            </div>
+                            <div>
+                                <Label className="text-xs font-bold">No-Issue Threshold</Label>
+                                <Input type="number" min="0" value={thresholdForm.no_issue_threshold}
+                                       data-testid="th-noissue-input"
+                                       onChange={(e) => setThresholdForm({ ...thresholdForm, no_issue_threshold: e.target.value })} />
+                            </div>
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2">
+                            <label className="flex items-center justify-between bg-slate-50 rounded-md p-2 border border-slate-200">
+                                <span className="text-xs font-bold">Allow Emergency Override</span>
+                                <Switch checked={!!thresholdForm.allow_emergency_override}
+                                        onCheckedChange={(v) => setThresholdForm({ ...thresholdForm, allow_emergency_override: v })}
+                                        data-testid="th-allow-override-toggle" />
+                            </label>
+                            <label className="flex items-center justify-between bg-slate-50 rounded-md p-2 border border-slate-200">
+                                <span className="text-xs font-bold">Approval Below Reserve</span>
+                                <Switch checked={!!thresholdForm.requires_approval_below_reserve}
+                                        onCheckedChange={(v) => setThresholdForm({ ...thresholdForm, requires_approval_below_reserve: v })} />
+                            </label>
+                            <div className="flex items-center gap-2 bg-slate-50 rounded-md p-2 border border-slate-200">
+                                <span className="text-xs font-bold whitespace-nowrap">Escalation (min)</span>
+                                <Input type="number" min="0" value={thresholdForm.escalation_minutes}
+                                       data-testid="th-escalation-input"
+                                       className="w-20"
+                                       onChange={(e) => setThresholdForm({ ...thresholdForm, escalation_minutes: e.target.value })} />
+                            </div>
+                        </div>
+                    </div>
+                    <DialogFooter>
+                        <Button variant="outline" onClick={() => setThresholdOpen(false)}>Close</Button>
+                        <Button onClick={saveThreshold} disabled={savingThreshold} className="bg-sky-600 hover:bg-sky-700"
+                                data-testid="save-threshold-button">
+                            {savingThreshold ? "Saving..." : "Save Thresholds"}
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
         </div>
     );
 }
