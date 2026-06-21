@@ -46,15 +46,17 @@ from models import (
     _new_id, _now_iso,
 )
 from seed import seed as seed_data
+from runtime_config import load_runtime_config, parse_cors_origins
 
 
 # ---------- App ----------
-mongo_url = os.environ["MONGO_URL"]
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ["DB_NAME"]]
+# MongoDB client and database are created during the startup lifecycle event.
+# These module-level names are reassigned in startup() so that all route
+# functions that close over `db` pick up the live connection.
+client: AsyncIOMotorClient | None = None  # type: ignore[type-arg]
+db = None  # type: ignore[assignment]
 
 app = FastAPI(title="Critical Medical Stock Monitoring System")
-app.state.db = db
 
 api = APIRouter(prefix="/api")
 
@@ -1865,8 +1867,9 @@ app.include_router(api)
 
 
 # ----- CORS -----
-_raw_origins = os.environ.get("CORS_ALLOWED_ORIGINS", "")
-_allowed_origins = [o.strip() for o in _raw_origins.split(",") if o.strip()]
+# Parse origins at import time so middleware is installed before the first request.
+# Full production validation runs inside startup() via load_runtime_config().
+_allowed_origins = parse_cors_origins(os.environ.get("CORS_ALLOWED_ORIGINS", ""))
 if not _allowed_origins:
     logging.getLogger(__name__).warning(
         "CORS_ALLOWED_ORIGINS is not set — all cross-origin requests will be blocked."
@@ -1888,48 +1891,90 @@ logger = logging.getLogger(__name__)
 
 @app.on_event("startup")
 async def startup():
-    await db.users.create_index("email", unique=True)
-    await db.items.create_index("internal_code", unique=True)
-    await db.items.create_index("barcode")
-    await db.departments.create_index("code", unique=True)
-    await db.stock_entries.create_index([("department_id", 1), ("item_id", 1)], unique=True)
-    await db.stock_transactions.create_index(
-        "idempotency_key", unique=True,
-        partialFilterExpression={"idempotency_key": {"$type": "string"}},
-    )
-    await db.item_department_thresholds.create_index(
-        [("item_id", 1), ("department_id", 1)], unique=True
-    )
-    await db.escalation_recipients.create_index("role", unique=True)
-    await db.stock_requests.create_index("request_number", unique=True)
-    await db.alerts.create_index("created_at")
-    await db.alerts.create_index("status")
-    await db.audit_logs.create_index("created_at")
-    await db.login_attempts.create_index("identifier")
-    if os.environ.get("SEED_DATA_ENABLED", "false").lower() == "true":
-        try:
-            await seed_data(db)
-            logger.info("Seed data ensured.")
-        except Exception as e:
-            logger.exception("Seed failed: %s", e)
-    else:
-        logger.info("SEED_DATA_ENABLED is not true — skipping seed data.")
-    # Migrate legacy alerts that pre-date the lifecycle schema
-    await db.alerts.update_many(
-        {"status": {"$exists": False}},
-        [{"$set": {
-            "status": {"$cond": [{"$eq": ["$acknowledged", True]}, "acknowledged", "open"]},
-            "escalation_level": 0,
-            "escalations": [],
-        }}],
-    )
-    # Launch SLA scheduler + reconciliation job in background
+    global client, db
     import asyncio
-    app.state.scheduler_task = asyncio.create_task(scheduler_mod.scheduler_loop(db))
-    app.state.reconcile_task = asyncio.create_task(scheduler_mod._reconciliation_loop(db))
-    logger.info("SLA scheduler + reconciliation job launched.")
+
+    # Validate all configuration first — raises ValueError on misconfiguration.
+    cfg = load_runtime_config()
+    logger.info(
+        "Runtime config OK — env=%s seed=%s secure=%s samesite=%s cors_origins=%d",
+        cfg.app_env,
+        cfg.seed_enabled,
+        cfg.cookie_secure,
+        cfg.cookie_samesite,
+        len(cfg.cors_origins),
+    )
+
+    # Create MongoDB connection using validated config values.
+    client = AsyncIOMotorClient(cfg.mongo_url)
+
+    try:
+        db = client[cfg.db_name]
+        app.state.db = db
+
+        await db.users.create_index("email", unique=True)
+        await db.items.create_index("internal_code", unique=True)
+        await db.items.create_index("barcode")
+        await db.departments.create_index("code", unique=True)
+        await db.stock_entries.create_index([("department_id", 1), ("item_id", 1)], unique=True)
+        await db.stock_transactions.create_index(
+            "idempotency_key", unique=True,
+            partialFilterExpression={"idempotency_key": {"$type": "string"}},
+        )
+        await db.item_department_thresholds.create_index(
+            [("item_id", 1), ("department_id", 1)], unique=True
+        )
+        await db.escalation_recipients.create_index("role", unique=True)
+        await db.stock_requests.create_index("request_number", unique=True)
+        await db.alerts.create_index("created_at")
+        await db.alerts.create_index("status")
+        await db.audit_logs.create_index("created_at")
+        await db.login_attempts.create_index("identifier")
+
+        if cfg.seed_enabled:
+            try:
+                await seed_data(db)
+                logger.info("Seed data ensured.")
+            except Exception as e:
+                logger.exception("Seed failed: %s", e)
+                raise
+        else:
+            logger.info("SEED_DATA_ENABLED is not true — skipping seed data.")
+
+        # Migrate legacy alerts that pre-date the lifecycle schema
+        await db.alerts.update_many(
+            {"status": {"$exists": False}},
+            [{"$set": {
+                "status": {"$cond": [{"$eq": ["$acknowledged", True]}, "acknowledged", "open"]},
+                "escalation_level": 0,
+                "escalations": [],
+            }}],
+        )
+
+        # Launch SLA scheduler + reconciliation job in background
+        app.state.scheduler_task = asyncio.create_task(scheduler_mod.scheduler_loop(db))
+        app.state.reconcile_task = asyncio.create_task(scheduler_mod._reconciliation_loop(db))
+        logger.info("SLA scheduler + reconciliation job launched.")
+
+    except BaseException:
+        # Best-effort scheduler cancellation if tasks were partially started
+        for task_attr in ("scheduler_task", "reconcile_task"):
+            task = getattr(app.state, task_attr, None)
+            if task is not None and not task.done():
+                task.cancel()
+        client.close()
+        client = None
+        db = None
+        app.state.db = None
+        raise
 
 
 @app.on_event("shutdown")
 async def shutdown():
-    client.close()
+    global client, db
+    if client is not None:
+        client.close()
+        client = None
+        db = None
+        app.state.db = None
+        logger.info("MongoDB client closed.")

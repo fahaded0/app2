@@ -127,6 +127,89 @@ export CI_INTEGRATION_TESTS_REQUIRED=true
 pytest backend/tests/
 ```
 
+## Startup configuration validation
+
+Before opening the MongoDB connection the backend calls `load_runtime_config()` from
+`backend/runtime_config.py`. This validates every required environment variable and
+enforces production safety rules. If validation fails the process exits immediately
+with a descriptive error listing every problem found.
+
+The module has no side effects on import — it can be imported in unit tests without
+triggering any network calls, database connections, file writes, or secret logging.
+
+All errors are collected and reported together in a single `ValueError`. Secret values
+(`JWT_SECRET`, `ADMIN_PASSWORD`, `MONGO_URL` connection strings) never appear in error
+messages or the startup log. `DB_NAME` is also excluded from the startup log summary.
+
+### What is validated at startup
+
+| Variable | Rules enforced |
+|---|---|
+| `APP_ENV` | Must be one of: `development`, `test`, `staging`, `production` |
+| `MONGO_URL` | Required; must begin with `mongodb://` or `mongodb+srv://`; value never exposed in errors |
+| `DB_NAME` | Required; must not contain `/`, `\`, or null characters |
+| `JWT_SECRET` | Required; minimum 32 characters |
+| `COOKIE_SECURE` | Must be a recognised boolean: `true`, `false`, `1`, `0`, `yes`, `no` (default: `true`) |
+| `COOKIE_SAMESITE` | Must be `lax`, `strict`, or `none` (default: `lax`) |
+| `COOKIE_SAMESITE=none` | Requires `COOKIE_SECURE=true` |
+| `SEED_DATA_ENABLED=true` | Requires `ADMIN_EMAIL` and `ADMIN_PASSWORD` |
+| `ADMIN_PASSWORD` | Minimum 12 characters; must not equal the `.env.example` placeholder |
+| Production: `SEED_DATA_ENABLED` | Must not be `true` |
+| Production: `COOKIE_SECURE` | Must be `true` |
+| Production: CORS origins | All origins must use HTTPS; localhost, `127.x.x.x`, and `[::1]` are rejected |
+
+### CORS origin validation
+
+Each origin in `CORS_ALLOWED_ORIGINS` is parsed with `urllib.parse.urlsplit` and must satisfy:
+
+- Scheme is `http` or `https` (no ftp, ws, etc.)
+- Hostname is present and non-empty
+- No embedded username or password
+- No path component (including bare `/`)
+- No query string
+- No fragment
+- Port, if present, must be a valid integer
+
+Exact duplicate origins are removed, preserving the first occurrence and original order.
+
+In production, additionally:
+
+- Every origin must use HTTPS
+- `localhost`, any `127.x.x.x` address, and `[::1]` are rejected
+
+### Cookie validation
+
+`COOKIE_SECURE` and `COOKIE_SAMESITE` are validated once in `runtime_config.py` via
+`load_cookie_config()`. This shared helper is used by both startup validation and by
+`auth.py`'s `set_auth_cookies()` — there is no duplicate implementation.
+
+### Seed password requirements
+
+When `SEED_DATA_ENABLED=true`:
+
+- `ADMIN_EMAIL` must be non-empty
+- `ADMIN_PASSWORD` must be at least 12 characters
+- `ADMIN_PASSWORD` must not equal the `.env.example` placeholder `change-me-strong-password`
+- `ADMIN_PASSWORD` never appears in error messages or logs
+
+### MongoDB startup and shutdown lifecycle
+
+1. `load_runtime_config()` runs first. Any error aborts startup before any connection is made.
+2. `AsyncIOMotorClient` is created using the validated `MONGO_URL`.
+3. All subsequent startup steps (database selection, index creation, seeding, migration,
+   scheduler launch) run inside a `try/except BaseException` block.
+4. If any step raises, the newly created MongoDB client is closed immediately, `server.client`,
+   `server.db`, and `app.state.db` are all set to `None`, and the exception is re-raised.
+   This prevents connection leaks on partial startup failure.
+5. On normal shutdown, the client is closed exactly once, and `server.client`, `server.db`,
+   and `app.state.db` are set to `None`. Calling shutdown when no client exists is safe.
+
+### Startup log summary
+
+The startup log includes only: `APP_ENV`, seed enabled status, `COOKIE_SECURE`, `COOKIE_SAMESITE`,
+and CORS origin count. It never logs `DB_NAME`, `MONGO_URL`, `JWT_SECRET`, `ADMIN_PASSWORD`,
+API keys, or individual CORS origin values.
+
 ## Verification levels
 
 | Level | What it checks | Command |
