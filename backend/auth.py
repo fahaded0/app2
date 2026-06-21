@@ -51,14 +51,50 @@ def create_refresh_token(user_id: str) -> str:
     return jwt.encode(payload, get_jwt_secret(), algorithm=JWT_ALGORITHM)
 
 
+_COOKIE_SECURE_TRUE = {"true", "1", "yes"}
+_COOKIE_SECURE_FALSE = {"false", "0", "no"}
+
+
+def _cookie_secure() -> bool:
+    raw = os.environ.get("COOKIE_SECURE", "true").lower().strip()
+    if raw in _COOKIE_SECURE_TRUE:
+        return True
+    if raw in _COOKIE_SECURE_FALSE:
+        return False
+    raise ValueError(
+        f"Invalid COOKIE_SECURE={raw!r}. Accepted values: true, false, 1, 0, yes, no."
+    )
+
+
+def _cookie_samesite() -> str:
+    value = os.environ.get("COOKIE_SAMESITE", "lax").lower().strip()
+    if value not in ("lax", "strict", "none"):
+        raise ValueError(
+            f"Invalid COOKIE_SAMESITE={value!r}. Must be one of: lax, strict, none."
+        )
+    return value
+
+
+def _get_cookie_config() -> tuple[bool, str]:
+    secure = _cookie_secure()
+    samesite = _cookie_samesite()
+    if samesite == "none" and not secure:
+        raise ValueError(
+            "COOKIE_SAMESITE=none requires COOKIE_SECURE=true. "
+            "Browsers reject SameSite=None cookies without the Secure flag."
+        )
+    return secure, samesite
+
+
 def set_auth_cookies(response, access_token: str, refresh_token: str) -> None:
+    secure, samesite = _get_cookie_config()
     response.set_cookie(
         key="access_token", value=access_token, httponly=True,
-        secure=False, samesite="lax", max_age=ACCESS_TOKEN_MINUTES * 60, path="/"
+        secure=secure, samesite=samesite, max_age=ACCESS_TOKEN_MINUTES * 60, path="/"
     )
     response.set_cookie(
         key="refresh_token", value=refresh_token, httponly=True,
-        secure=False, samesite="lax", max_age=REFRESH_TOKEN_DAYS * 86400, path="/"
+        secure=secure, samesite=samesite, max_age=REFRESH_TOKEN_DAYS * 86400, path="/"
     )
 
 

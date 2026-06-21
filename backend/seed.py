@@ -1,6 +1,5 @@
 """Seed initial data: admin, departments, users, item master, sample stock."""
 import os
-from pathlib import Path
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
@@ -80,7 +79,7 @@ def _calc_status(balance: int, min_level: int, critical: int) -> str:
 
 
 async def _ensure_admin(db: AsyncIOMotorDatabase) -> dict:
-    """Ensure the admin user exists, is active, and has the English full_name."""
+    """Ensure the admin user exists with the English full_name. Never reactivates an existing user."""
     admin_email = os.environ["ADMIN_EMAIL"]
     admin_password = os.environ["ADMIN_PASSWORD"]
     target_name = "System Administrator"
@@ -97,10 +96,10 @@ async def _ensure_admin(db: AsyncIOMotorDatabase) -> dict:
             "created_at": _now_iso(),
         }
         await db.users.insert_one(admin)
-    elif existing.get("full_name") != target_name or not existing.get("is_active", True):
+    elif existing.get("full_name") != target_name:
         await db.users.update_one(
             {"email": admin_email},
-            {"$set": {"full_name": target_name, "is_active": True}}
+            {"$set": {"full_name": target_name}}
         )
     return await db.users.find_one({"email": admin_email})
 
@@ -183,7 +182,7 @@ async def _ensure_users(db: AsyncIOMotorDatabase, dept_ids: dict) -> None:
         else:
             await db.users.update_one(
                 {"email": u["email"]},
-                {"$set": {"full_name": u["full_name"], "department_id": dept_id, "is_active": True}}
+                {"$set": {"full_name": u["full_name"], "department_id": dept_id}}
             )
 
 
@@ -270,33 +269,9 @@ async def _ensure_sample_stock(
             })
 
 
-def _write_credentials_file(admin_email: str, admin_password: str) -> None:
-    cred_path = Path("/app/memory/test_credentials.md")
-    cred_path.parent.mkdir(parents=True, exist_ok=True)
-    cred_path.write_text(
-        "# Test Credentials\n\n"
-        "## Admin\n"
-        f"- Email: {admin_email}\n"
-        f"- Password: {admin_password}\n"
-        "- Role: super_admin\n\n"
-        "## Sample Users\n"
-        "- Department Head (ER): head.er@medstock.sa / Head@12345\n"
-        "- Stock Officer (ER): officer.er@medstock.sa / Officer@12345\n"
-        "- Stock Officer (ICU): officer.icu@medstock.sa / Officer@12345\n"
-        "- Supply Officer: supply@medstock.sa / Supply@12345\n"
-        "- Auditor: auditor@medstock.sa / Audit@12345\n\n"
-        "## Auth Endpoints\n"
-        "- POST /api/auth/login\n"
-        "- GET /api/auth/me\n"
-        "- POST /api/auth/logout\n",
-        encoding="utf-8",
-    )
-
-
 async def seed(db: AsyncIOMotorDatabase) -> None:
     admin = await _ensure_admin(db)
     dept_ids = await _ensure_departments(db)
     item_ids = await _ensure_items(db)
     await _ensure_users(db, dept_ids)
     await _ensure_sample_stock(db, dept_ids, item_ids, admin["id"], admin["full_name"])
-    _write_credentials_file(os.environ["ADMIN_EMAIL"], os.environ["ADMIN_PASSWORD"])

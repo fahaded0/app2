@@ -1865,10 +1865,16 @@ app.include_router(api)
 
 
 # ----- CORS -----
+_raw_origins = os.environ.get("CORS_ALLOWED_ORIGINS", "")
+_allowed_origins = [o.strip() for o in _raw_origins.split(",") if o.strip()]
+if not _allowed_origins:
+    logging.getLogger(__name__).warning(
+        "CORS_ALLOWED_ORIGINS is not set — all cross-origin requests will be blocked."
+    )
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,           # we use bearer header from frontend; cookies optional
+    allow_origins=_allowed_origins,
+    allow_credentials=bool(_allowed_origins),
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -1900,11 +1906,14 @@ async def startup():
     await db.alerts.create_index("status")
     await db.audit_logs.create_index("created_at")
     await db.login_attempts.create_index("identifier")
-    try:
-        await seed_data(db)
-        logger.info("Seed data ensured.")
-    except Exception as e:
-        logger.exception("Seed failed: %s", e)
+    if os.environ.get("SEED_DATA_ENABLED", "false").lower() == "true":
+        try:
+            await seed_data(db)
+            logger.info("Seed data ensured.")
+        except Exception as e:
+            logger.exception("Seed failed: %s", e)
+    else:
+        logger.info("SEED_DATA_ENABLED is not true — skipping seed data.")
     # Migrate legacy alerts that pre-date the lifecycle schema
     await db.alerts.update_many(
         {"status": {"$exists": False}},
