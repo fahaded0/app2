@@ -2,19 +2,92 @@
 
 ## Python version
 
-Python 3.11 or later is required.
+Tested with Python 3.11.15. Use Python 3.11.x for the verified local setup. Other Python versions have not been verified.
 
-## Backend startup
+## Dependency files
+
+| File | Purpose |
+|---|---|
+| `backend/requirements.txt` | Emergent runtime image manifest — may contain private packages (`litellm`, `emergentintegrations`) or pre-installed system packages not available on PyPI. **Do not use this for local development.** |
+| `backend/requirements.app.txt` | Direct runtime dependency manifest. Lists only packages directly imported by backend production source. Transitive dependencies are resolved by pip at install time. Use for local development. |
+| `backend/requirements-dev.txt` | Extends `requirements.app.txt` with `pytest` and `requests` (used by integration tests). Use for local testing. |
+
+Neither `requirements.app.txt` nor `requirements-dev.txt` is a lock file — pip resolves transitive dependencies at install time. A pinned lock file (`requirements.lock.txt`) will be added in a future package.
+
+## Backend local setup
+
+### Linux / macOS
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python3 -m pip install --upgrade pip
+python3 -m pip install -r backend/requirements-dev.txt
+```
+
+### Windows (PowerShell)
+
+```powershell
+py -3.11 -m venv .venv
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r backend\requirements-dev.txt
+```
+
+### Environment file
+
+The backend reads `backend/.env` — loaded via `load_dotenv(ROOT_DIR / ".env")` in `server.py`, where `ROOT_DIR` is the `backend/` directory. A root-level `.env` is not automatically loaded by the backend.
+
+#### Linux / macOS
+
+```bash
+cp .env.example backend/.env
+# Edit backend/.env and fill in MONGO_URL, DB_NAME, JWT_SECRET, etc.
+```
+
+#### Windows (PowerShell)
+
+```powershell
+Copy-Item .env.example backend\.env
+# Edit backend\.env and fill in MONGO_URL, DB_NAME, JWT_SECRET, etc.
+```
+
+### Start the backend
+
+#### Linux / macOS
 
 ```bash
 cd backend
-pip install -r requirements.txt   # or requirements.app.txt if present
-uvicorn server:app --reload --host 0.0.0.0 --port 8000
+python3 -m uvicorn server:app --reload --host 0.0.0.0 --port 8000
+```
+
+#### Windows (PowerShell)
+
+```powershell
+cd backend
+python -m uvicorn server:app --reload --host 0.0.0.0 --port 8000
 ```
 
 ## Frontend startup
 
+Node.js and Yarn are required for frontend development. Frontend runtime-version validation is outside the scope of Package 0C1.
+
+The React frontend reads `REACT_APP_BACKEND_URL` from `frontend/.env`. Create that file before starting the dev server. Do not copy backend secrets into `frontend/.env`.
+
+#### Linux / macOS
+
 ```bash
+printf 'REACT_APP_BACKEND_URL=http://localhost:8000\n' > frontend/.env
+cd frontend
+yarn install
+yarn start
+```
+
+#### Windows (PowerShell)
+
+```powershell
+"REACT_APP_BACKEND_URL=http://localhost:8000" | Set-Content frontend\.env
 cd frontend
 yarn install
 yarn start
@@ -22,13 +95,7 @@ yarn start
 
 ## Environment variables
 
-Copy `.env.example` to `.env` in the project root and fill in real values:
-
-```bash
-cp .env.example .env
-```
-
-The backend loads `.env` automatically on startup via `python-dotenv`.
+The backend reads `backend/.env`. Fill in real values before starting the server:
 
 | Variable | Required | Description |
 |---|---|---|
@@ -125,17 +192,23 @@ collection time. No network request is made during `--collect-only`.
 
 ### Running tests
 
+Activate the virtual environment first (`source .venv/bin/activate` or `.\.venv\Scripts\Activate.ps1`),
+then install dev dependencies if not already done (`python3 -m pip install -r backend/requirements-dev.txt`).
+
 ```bash
-# All tests (unit + integration, with a live backend)
-export REACT_APP_BACKEND_URL=http://localhost:8000
-python3 -m pytest backend/tests/
+# Unit tests only — no backend or environment variables needed
+python3 -m pytest backend/tests/ -m "not integration" -q
 
-# Unit tests only (no backend needed)
-python3 -m pytest backend/tests/ -m "not integration"
+# Infrastructure unit tests only
+python3 -m pytest backend/tests/test_test_infrastructure.py -q
 
-# Integration tests only (live backend required)
+# All tests (unit + integration) — live backend required
 export REACT_APP_BACKEND_URL=http://localhost:8000
-python3 -m pytest backend/tests/ -m integration
+python3 -m pytest backend/tests/ -q
+
+# Integration tests only
+export REACT_APP_BACKEND_URL=http://localhost:8000
+python3 -m pytest backend/tests/ -m integration -q
 
 # Collection-only validation (no tests executed, no network)
 REACT_APP_BACKEND_URL=http://localhost:8000 \
@@ -241,8 +314,8 @@ API keys, or individual CORS origin values.
 | Level | What it checks | Command |
 |---|---|---|
 | Static verification | Python syntax and imports compile | `python -m compileall backend` |
-| Test collection verification | pytest can discover tests without errors | `pytest --collect-only backend/tests/` |
-| Runtime integration verification | Tests execute against a live backend | `pytest backend/tests/` with `REACT_APP_BACKEND_URL` set |
+| Test collection verification | pytest can discover tests without errors | `python -m pytest --collect-only backend/tests/` |
+| Runtime integration verification | Tests execute against a live backend | `python -m pytest backend/tests/` with `REACT_APP_BACKEND_URL` set |
 | Passed tests | All collected tests return green | Reported by pytest exit code 0 |
 
 Static verification passing does **not** imply tests will pass. Test collection not erroring does **not** imply tests will pass. Only a green pytest run against a configured backend constitutes passed integration tests.
