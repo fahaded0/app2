@@ -46,7 +46,7 @@ The backend loads `.env` automatically on startup via `python-dotenv`.
 | `RESEND_API_KEY` | No | Resend API key for outbound email |
 | `SENDER_EMAIL` | No | From-address for outbound email |
 | `APP_URL` | No | Public URL used in email links |
-| `CI_INTEGRATION_TESTS_REQUIRED` | No | `true` to fail test collection when backend URL is missing |
+| `CI_INTEGRATION_TESTS_REQUIRED` | No | `true`/`false`/`1`/`0`/`yes`/`no` — abort CI when backend URL is missing (default: `false`) |
 
 ## SEED_DATA_ENABLED behavior
 
@@ -91,41 +91,67 @@ CORS_ALLOWED_ORIGINS=https://app.example.com,https://staging.example.com
 
 ## Integration tests
 
-Tests in `backend/tests/` require a running backend. They are controlled by two environment variables:
+### Architecture
 
-### `REACT_APP_BACKEND_URL`
+Integration tests are marked with `pytest.mark.integration`. The centralized guard lives in
+`backend/tests/conftest.py` — a single enforcement point that controls skip and CI-abort
+behaviour for all four integration modules. No test module duplicates this logic.
 
-URL of the backend the tests will hit, e.g. `http://localhost:8000`.
+Unit tests (`test_runtime_config.py`, `test_server_lifecycle.py`, `test_test_infrastructure.py`)
+carry no `integration` marker and always run, regardless of `REACT_APP_BACKEND_URL`.
 
-### `CI_INTEGRATION_TESTS_REQUIRED`
+### Environment variables
 
-Controls what happens when `REACT_APP_BACKEND_URL` is absent:
+| Variable | Required | Description |
+|---|---|---|
+| `REACT_APP_BACKEND_URL` | Yes (integration) | URL of the live backend, e.g. `http://localhost:8000` |
+| `CI_INTEGRATION_TESTS_REQUIRED` | No | Accepted values: `true`, `false`, `1`, `0`, `yes`, `no` (default: `false`) |
+
+`CI_INTEGRATION_TESTS_REQUIRED` is parsed case-insensitively. Any other non-empty value is
+rejected with a clear configuration error.
+
+### Guard behaviour
 
 | `REACT_APP_BACKEND_URL` | `CI_INTEGRATION_TESTS_REQUIRED` | Result |
 |---|---|---|
-| Set | any | Tests run normally |
-| Unset | `false` or unset | Module is **skipped** with an informational message — no tests reported as passed |
-| Unset | `true` | Collection **fails** with a configuration error — CI pipeline is blocked |
+| Set | any | Integration tests run; backend is not contacted during collection |
+| Unset | `false` or unset | Integration tests **skipped**; unit tests run normally |
+| Unset | `true` | One clear `UsageError` aborts pytest; no collection errors |
 
-**Skipped tests are not passing tests.** A skip suppresses the module; it does not count as success.
+**Skipped tests are not passing tests.** A skip is not success.
 
-### Running tests locally
+The backend URL is used only when integration test bodies execute — never at import or
+collection time. No network request is made during `--collect-only`.
+
+### Running tests
 
 ```bash
+# All tests (unit + integration, with a live backend)
 export REACT_APP_BACKEND_URL=http://localhost:8000
-cd backend
-pytest tests/
+python3 -m pytest backend/tests/
+
+# Unit tests only (no backend needed)
+python3 -m pytest backend/tests/ -m "not integration"
+
+# Integration tests only (live backend required)
+export REACT_APP_BACKEND_URL=http://localhost:8000
+python3 -m pytest backend/tests/ -m integration
+
+# Collection-only validation (no tests executed, no network)
+REACT_APP_BACKEND_URL=http://localhost:8000 \
+  python3 -m pytest backend/tests/ --collect-only -q
 ```
 
-### Running tests in CI
-
-Set both variables before running pytest:
+### CI configuration
 
 ```bash
 export REACT_APP_BACKEND_URL=https://staging.example.com
 export CI_INTEGRATION_TESTS_REQUIRED=true
-pytest backend/tests/
+python3 -m pytest backend/tests/
 ```
+
+When `CI_INTEGRATION_TESTS_REQUIRED=true` and `REACT_APP_BACKEND_URL` is unset, pytest aborts
+immediately with one error message rather than four separate module-level collection failures.
 
 ## Startup configuration validation
 

@@ -5,22 +5,10 @@ import uuid
 import requests
 import pytest
 
-_backend_url = os.environ.get("REACT_APP_BACKEND_URL", "").strip().rstrip("/")
-_ci_required = os.environ.get("CI_INTEGRATION_TESTS_REQUIRED", "").lower() == "true"
-
-if not _backend_url and _ci_required:
-    raise RuntimeError(
-        "CI_INTEGRATION_TESTS_REQUIRED=true but REACT_APP_BACKEND_URL is not set. "
-        "Configure REACT_APP_BACKEND_URL before running integration tests in CI."
-    )
-
-BASE_URL = _backend_url
+BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "").strip().rstrip("/")
 API = f"{BASE_URL}/api"
 
-pytestmark = pytest.mark.skipif(
-    not _backend_url,
-    reason="REACT_APP_BACKEND_URL is not set — set it to run integration tests against a live backend",
-)
+pytestmark = pytest.mark.integration
 
 CREDS = {
     "admin":   ("admin@medstock.sa", "Admin@12345"),
