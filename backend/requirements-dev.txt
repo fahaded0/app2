@@ -1,0 +1,15 @@
+# Development and testing dependencies.
+# This is a direct-dependency manifest — only packages directly required for
+# local development and test execution are listed here.
+# Install this file for local development and testing:
+#   pip install -r requirements-dev.txt
+#
+# This pulls in all runtime dependencies via requirements.app.txt.
+
+-r requirements.app.txt
+
+# ── Test runner ───────────────────────────────────────────────────────────────
+pytest==9.0.3
+
+# ── Integration test HTTP client ──────────────────────────────────────────────
+requests==2.34.2
