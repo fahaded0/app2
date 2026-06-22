@@ -158,6 +158,69 @@ CORS_ALLOWED_ORIGINS=https://app.example.com,https://staging.example.com
 
 ## Integration tests
 
+### Docker-based environment (recommended)
+
+The integration-test environment is defined in `docker-compose.test.yml`. It runs:
+
+- **MongoDB 6** as a single-node replica set (`rs0`). The replica set is required to support
+  the transaction implementation introduced in Package 1 (RISK-01 atomic stock issuance).
+- **Python 3.11** backend with seed data enabled.
+- **Python 3.11** test runner with `CI_INTEGRATION_TESTS_REQUIRED=true`.
+
+The test database (`medstock_test`) is disposable — tests create, modify, and delete records.
+Always run `down -v` between clean full-suite runs to start from a known-empty state. Never
+run these integration tests against staging or production.
+
+**A green result requires all integration tests to execute.** Skipped integration tests are
+not considered success.
+
+#### Linux / macOS
+
+```bash
+# First time: copy the environment template
+cp .env.test.example .env.test
+
+# Validate the composed configuration
+docker compose --env-file .env.test -f docker-compose.test.yml config
+
+# Run the full stack
+docker compose --env-file .env.test -f docker-compose.test.yml \
+  up --abort-on-container-exit --exit-code-from tests
+
+# Tear down volumes between runs
+docker compose --env-file .env.test -f docker-compose.test.yml \
+  down -v --remove-orphans
+```
+
+#### Windows (PowerShell)
+
+```powershell
+# First time: copy the environment template
+Copy-Item .env.test.example .env.test
+
+# Validate the composed configuration
+docker compose --env-file .env.test -f docker-compose.test.yml config
+
+# Run the full stack
+docker compose --env-file .env.test -f docker-compose.test.yml `
+  up --abort-on-container-exit --exit-code-from tests
+
+# Tear down volumes between runs
+docker compose --env-file .env.test -f docker-compose.test.yml `
+  down -v --remove-orphans
+```
+
+#### Test credential variables
+
+The test runner passes `TEST_ADMIN_EMAIL` and `TEST_ADMIN_PASSWORD` to the integration
+modules. The Docker Compose file sets these automatically; no manual override is needed
+for the default test setup.
+
+| Variable | Set in | Purpose |
+|---|---|---|
+| `TEST_ADMIN_EMAIL` | `docker-compose.test.yml` / test runner env | Admin email read by all four integration modules |
+| `TEST_ADMIN_PASSWORD` | `docker-compose.test.yml` / test runner env | Admin password; must match `ADMIN_PASSWORD` in the backend service |
+
 ### Architecture
 
 Integration tests are marked with `pytest.mark.integration`. The centralized guard lives in

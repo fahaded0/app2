@@ -15,7 +15,8 @@ API = f"{BASE_URL}/api"
 
 pytestmark = pytest.mark.integration
 
-ADMIN = {"email": "admin@medstock.sa", "password": "Admin@12345"}
+ADMIN = {"email": os.environ.get("TEST_ADMIN_EMAIL", "admin@medstock.sa"),
+         "password": os.environ.get("TEST_ADMIN_PASSWORD", "Admin@12345")}
 OFFICER_ER = {"email": "officer.er@medstock.sa", "password": "Officer@12345"}
 OFFICER_ICU = {"email": "officer.icu@medstock.sa", "password": "Officer@12345"}
 SUPPLY = {"email": "supply@medstock.sa", "password": "Supply@12345"}

@@ -75,13 +75,55 @@ Neither `requirements.app.txt` nor `requirements-dev.txt` is a lock file — pip
 
 ## Running tests
 
-```bash
-# Unit tests — no backend required
-python3 -m pytest backend/tests/ -m "not integration" -q
+### Unit tests (no backend required)
 
-# Full suite — requires a live backend
-export REACT_APP_BACKEND_URL=http://localhost:8000
-python3 -m pytest backend/tests/ -q
+```bash
+python3 -m pytest backend/tests/ -m "not integration" -q
+```
+
+### Integration tests — Docker (recommended)
+
+The integration-test environment uses Docker Compose with Python 3.11 and MongoDB 6
+configured as a single-node replica set (`rs0`). MongoDB is run as a replica set to
+support the transaction implementation introduced in Package 1. The test database is
+disposable — tests mutate records. Always run `down -v` between clean full-suite runs.
+Never run these tests against staging or production.
+
+A green result requires all integration tests to execute. Skipped integration tests
+are not considered success.
+
+#### Linux / macOS
+
+```bash
+cp .env.test.example .env.test
+
+# Validate the composed configuration
+docker compose --env-file .env.test -f docker-compose.test.yml config
+
+# Run the full stack (exits when the tests service exits)
+docker compose --env-file .env.test -f docker-compose.test.yml \
+  up --abort-on-container-exit --exit-code-from tests
+
+# Tear down and remove volumes between runs
+docker compose --env-file .env.test -f docker-compose.test.yml \
+  down -v --remove-orphans
+```
+
+#### Windows (PowerShell)
+
+```powershell
+Copy-Item .env.test.example .env.test
+
+# Validate the composed configuration
+docker compose --env-file .env.test -f docker-compose.test.yml config
+
+# Run the full stack
+docker compose --env-file .env.test -f docker-compose.test.yml `
+  up --abort-on-container-exit --exit-code-from tests
+
+# Tear down and remove volumes between runs
+docker compose --env-file .env.test -f docker-compose.test.yml `
+  down -v --remove-orphans
 ```
 
 Integration tests are marked `pytest.mark.integration` and are skipped automatically when

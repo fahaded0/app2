@@ -10,8 +10,11 @@ API = f"{BASE_URL}/api"
 
 pytestmark = pytest.mark.integration
 
+_ADMIN_EMAIL = os.environ.get("TEST_ADMIN_EMAIL", "admin@medstock.sa")
+_ADMIN_PW    = os.environ.get("TEST_ADMIN_PASSWORD", "Admin@12345")
+
 CREDS = {
-    "admin":   ("admin@medstock.sa", "Admin@12345"),
+    "admin":   (_ADMIN_EMAIL, _ADMIN_PW),
     "head_er": ("head.er@medstock.sa", "Head@12345"),
     "off_er":  ("officer.er@medstock.sa", "Officer@12345"),
     "off_icu": ("officer.icu@medstock.sa", "Officer@12345"),
@@ -335,11 +338,15 @@ class TestReports:
             assert "rows" in d and "count" in d
 
     def test_export_csv(self, H):
+        import csv as _csv, io as _io
         r = requests.get(f"{API}/reports/zero_level/export.csv",
                          headers=H["admin"], timeout=15)
         assert r.status_code == 200
         assert "text/csv" in r.headers.get("content-type", "")
-        assert "department_code" in r.text
+        reader = _csv.reader(_io.StringIO(r.text))
+        header_row = next(reader)
+        assert "Department" in header_row
+        assert "Item Code" in header_row
 
 
 # ---------- USER RBAC ----------

@@ -1,0 +1,112 @@
+# Docker Compose — disposable integration-test environment.
+# Use only for local testing. Never point at staging or production.
+#
+# Usage:
+#   cp .env.test.example .env.test          # once, fill in any overrides
+#   docker compose --env-file .env.test -f docker-compose.test.yml up \
+#     --abort-on-container-exit --exit-code-from tests
+#   docker compose --env-file .env.test -f docker-compose.test.yml down -v --remove-orphans
+
+services:
+
+  mongo:
+    image: mongo:6
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
+    volumes:
+      - mongo_test_data:/data/db
+    healthcheck:
+      test: >
+        mongosh --quiet --eval
+        "try { db.runCommand({ ping: 1 }).ok } catch(e) { 0 }"
+        | grep -q 1
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  mongo-init:
+    image: mongo:6
+    depends_on:
+      mongo:
+        condition: service_healthy
+    # Initializes rs0 idempotently, waits for PRIMARY, then stays running so
+    # --abort-on-container-exit is not triggered by this service exiting.
+    # The health check lets the backend depend on condition: service_healthy.
+    command: >
+      bash -c "
+        mongosh --host mongo --quiet --eval \"
+          try {
+            rs.initiate({ _id: 'rs0', members: [{ _id: 0, host: 'mongo:27017' }] });
+          } catch(e) {
+            if (e.codeName !== 'AlreadyInitialized') { throw e; }
+          }
+        \";
+        until mongosh --host mongo --quiet --eval \"db.hello().isWritablePrimary\" | grep -q true; do
+          sleep 1;
+        done;
+        echo 'rs0 PRIMARY and ready';
+        tail -f /dev/null
+      "
+    healthcheck:
+      test: >
+        mongosh --host mongo --quiet --eval
+        "db.hello().isWritablePrimary"
+        | grep -q true
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 15s
+
+  backend:
+    image: python:3.11-slim
+    working_dir: /app/backend
+    volumes:
+      - .:/app
+    command: >
+      sh -c "pip install -q -r /app/backend/requirements-dev.txt &&
+             python -m uvicorn server:app --host 0.0.0.0 --port 8000"
+    environment:
+      APP_ENV: test
+      MONGO_URL: "mongodb://mongo:27017/?replicaSet=rs0"
+      DB_NAME: medstock_test
+      JWT_SECRET: test-jwt-secret-for-local-disposable-use-only-32ch
+      ADMIN_EMAIL: admin@medstock.sa
+      ADMIN_PASSWORD: TestAdmin@12345
+      SEED_DATA_ENABLED: "true"
+      COOKIE_SECURE: "false"
+      COOKIE_SAMESITE: lax
+      CORS_ALLOWED_ORIGINS: "http://localhost:3000"
+    depends_on:
+      mongo-init:
+        condition: service_healthy
+    healthcheck:
+      test: >
+        python -c
+        "import urllib.request, sys;
+        r=urllib.request.urlopen('http://localhost:8000/openapi.json', timeout=5);
+        sys.exit(0 if r.status==200 else 1)"
+      interval: 10s
+      timeout: 10s
+      retries: 18
+      start_period: 30s
+
+  tests:
+    image: python:3.11-slim
+    working_dir: /app
+    volumes:
+      - .:/app
+    command: >
+      sh -c "pip install -q -r /app/backend/requirements-dev.txt &&
+             python -m pytest backend/tests/ -q"
+    environment:
+      REACT_APP_BACKEND_URL: "http://backend:8000"
+      CI_INTEGRATION_TESTS_REQUIRED: "true"
+      TEST_ADMIN_EMAIL: admin@medstock.sa
+      TEST_ADMIN_PASSWORD: TestAdmin@12345
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: "no"
+
+volumes:
+  mongo_test_data:
