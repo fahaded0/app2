@@ -8,7 +8,8 @@ API = f"{BASE_URL}/api"
 
 pytestmark = pytest.mark.integration
 
-ADMIN = ("admin@medstock.sa", "Admin@12345")
+ADMIN = (os.environ.get("TEST_ADMIN_EMAIL", "admin@medstock.sa"),
+         os.environ.get("TEST_ADMIN_PASSWORD", "Admin@12345"))
 HEAD_ER = ("head.er@medstock.sa", "Head@12345")
 OFFICER_ER = ("officer.er@medstock.sa", "Officer@12345")
 OFFICER_ICU = ("officer.icu@medstock.sa", "Officer@12345")

@@ -1206,7 +1206,9 @@ async def list_alerts(
             q["status"] = status
     elif acknowledged is not None:
         if acknowledged is False:
-            q["status"] = {"$in": ["open", "acknowledged", "in_progress"]}
+            # Legacy boolean filter implemented as a current-status bucket.
+            # false excludes alerts whose current status is acknowledged, resolved, or closed.
+            q["status"] = {"$in": ["open", "in_progress"]}
         else:
             q["status"] = {"$in": ["resolved", "closed"]}
     if severity:
