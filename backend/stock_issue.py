@@ -19,14 +19,17 @@ from models import _new_id, _now_iso
 
 
 # ---------- Threshold model helpers ----------
-async def ensure_threshold(db: AsyncIOMotorDatabase, item_id: str, department_id: str) -> dict:
+async def ensure_threshold(
+    db: AsyncIOMotorDatabase, item_id: str, department_id: str, *, session=None
+) -> dict:
     """Return the per-department threshold, falling back to item defaults if missing."""
     th = await db.item_department_thresholds.find_one(
-        {"item_id": item_id, "department_id": department_id}, {"_id": 0}
+        {"item_id": item_id, "department_id": department_id}, {"_id": 0},
+        session=session,
     )
     if th:
         return th
-    item = await db.items.find_one({"id": item_id}, {"_id": 0})
+    item = await db.items.find_one({"id": item_id}, {"_id": 0}, session=session)
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
     return {

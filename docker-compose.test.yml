@@ -76,6 +76,7 @@ services:
       COOKIE_SECURE: "false"
       COOKIE_SAMESITE: lax
       CORS_ALLOWED_ORIGINS: "http://localhost:3000"
+      TRANSACTION_TEST_HOOKS_ENABLED: "true"
     depends_on:
       mongo-init:
         condition: service_healthy
