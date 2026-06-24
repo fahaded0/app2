@@ -9,7 +9,7 @@ import logging
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, BackgroundTasks
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, BackgroundTasks, Header
 from fastapi.responses import StreamingResponse
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -36,6 +36,7 @@ import scheduler as scheduler_mod
 import excel_import
 import stock_issue
 import email_service
+import ledger as ledger_mod
 from models import (
     UserCreate, UserUpdate, LoginBody,
     DepartmentCreate, ItemCreate, ItemUpdate,
@@ -98,6 +99,39 @@ def _calc_stock_status(balance: int, min_level: int, critical_threshold: int) ->
     if balance < min_level:
         return "critical_level"
     return "available"
+
+
+def _validate_idempotent_replay(prior: dict, *, source: str, department_id: str, item_id: str, entry_type: str, **op_fields) -> None:
+    """Raise HTTP 409 if prior ledger record doesn't match this operation's payload."""
+    mismatches = []
+    for field, expected in [
+        ("source", source),
+        ("department_id", department_id),
+        ("item_id", item_id),
+        ("entry_type", entry_type),
+    ]:
+        if prior.get(field) != expected:
+            mismatches.append(field)
+    for field, expected in op_fields.items():
+        if prior.get(field) != expected:
+            mismatches.append(field)
+    if mismatches:
+        raise HTTPException(status_code=409, detail=f"Idempotency key reused with different payload: {mismatches}")
+
+
+_RESERVED_IDEM_PREFIXES = ("baseline:", "excel:", "seed:")
+
+
+def _check_reserved_idempotency_key(key: Optional[str]) -> None:
+    """Raise HTTP 422 if the key uses an internally-reserved namespace prefix."""
+    if not key:
+        return
+    for prefix in _RESERVED_IDEM_PREFIXES:
+        if key.startswith(prefix):
+            raise HTTPException(
+                status_code=422,
+                detail=f"Idempotency key may not use reserved '{prefix}' prefix",
+            )
 
 
 def _strip_mongo_id(doc: dict) -> dict:
@@ -387,6 +421,7 @@ async def list_stock(
 async def upsert_stock(
     body: StockEntryUpdate,
     request: Request,
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
     user: dict = Depends(require_roles(
         "super_admin", "department_stock_officer", "department_head", "supply_officer"
     )),
@@ -395,100 +430,232 @@ async def upsert_stock(
         if user.get("department_id") != body.department_id:
             raise HTTPException(status_code=403, detail="You cannot post stock for a different department")
 
-    item = await db.items.find_one({"id": body.item_id})
-    if not item:
+    _check_reserved_idempotency_key(idempotency_key)
+
+    # Fast 404 guards before starting a transaction
+    if not await db.items.find_one({"id": body.item_id}, {"_id": 0}):
         raise HTTPException(status_code=404, detail="Item not found")
-    dept = await db.departments.find_one({"id": body.department_id})
-    if not dept:
+    if not await db.departments.find_one({"id": body.department_id}, {"_id": 0}):
         raise HTTPException(status_code=404, detail="Department not found")
 
-    existing = await db.stock_entries.find_one({"department_id": body.department_id, "item_id": body.item_id})
-    new_status = _calc_stock_status(body.balance, item["min_level"], item["critical_threshold"])
-    previous_balance = existing["balance"] if existing else None
-    previous_status = existing["status"] if existing else None
+    idem_key = idempotency_key or _new_id()
 
-    shortage_start = None
-    if new_status in ("zero_level", "critical_level"):
-        if existing and existing.get("shortage_start"):
-            shortage_start = existing["shortage_start"]
-        else:
-            shortage_start = _now_iso()
+    # Fast idempotency pre-check (avoids starting a transaction for replays)
+    prior = await db.stock_transactions.find_one({"idempotency_key": idem_key, "schema_version": 2}, {"_id": 0})
+    if prior:
+        _validate_idempotent_replay(prior, source="upsert_stock", department_id=body.department_id,
+                                    item_id=body.item_id, entry_type=prior.get("entry_type", "adjustment"),
+                                    new_balance=body.balance)
+        return {"status": "ok", "stock_status": prior.get("status"), "idempotent_replay": True}
 
-    entry_doc = {
-        "department_id": body.department_id,
-        "item_id": body.item_id,
-        "balance": body.balance,
-        "status": new_status,
-        "last_updated_by": user["id"],
-        "last_updated_by_name": user["full_name"],
-        "last_updated_at": _now_iso(),
-        "shortage_start": shortage_start,
-        "notes": body.notes,
-    }
-    if existing:
-        await db.stock_entries.update_one({"id": existing["id"]}, {"$set": entry_doc})
-        entry_id = existing["id"]
-    else:
-        entry_id = _new_id()
-        await db.stock_entries.insert_one({"id": entry_id, **entry_doc})
+    fail_after = request.headers.get("X-Test-Txn-Fail-After") if _TXN_HOOKS_ACTIVE else None
 
-    await db.stock_transactions.insert_one({
-        "id": _new_id(),
-        "department_id": body.department_id,
-        "item_id": body.item_id,
-        "previous_balance": previous_balance,
-        "new_balance": body.balance,
-        "delta": body.balance - (previous_balance or 0),
-        "status": new_status,
-        "user_id": user["id"],
-        "user_name": user["full_name"],
-        "created_at": _now_iso(),
-        "reason": body.notes,
-    })
+    async def _txn_callback(session):
+        # Recheck idempotency key inside transaction (race-condition guard)
+        prior_inner = await db.stock_transactions.find_one(
+            {"idempotency_key": idem_key, "schema_version": 2}, {"_id": 0}, session=session
+        )
+        if prior_inner:
+            _validate_idempotent_replay(prior_inner, source="upsert_stock", department_id=body.department_id,
+                                        item_id=body.item_id, entry_type=prior_inner.get("entry_type", "adjustment"),
+                                        new_balance=body.balance)
+            return {"status": "ok", "stock_status": prior_inner.get("status"), "idempotent_replay": True}
 
-    # Generate alerts on status change
-    if new_status != previous_status:
-        if new_status == "zero_level":
-            sev = "critical" if item.get("is_life_saving") else "danger"
-            await db.alerts.insert_one(_new_alert(
-                type="zero_level", severity=sev,
-                title=f"Zero stock — {item['name_en']}",
-                message=f"Balance in {dept['code']} reached zero",
-                department_id=body.department_id, item_id=body.item_id,
-            ))
-            if item.get("is_life_saving"):
-                await db.alerts.insert_one(_new_alert(
-                    type="life_saving_item", severity="critical",
-                    title=f"URGENT: Life-saving item out of stock — {item['name_en']}",
-                    message=f"Department: {dept['code']} — immediate action required",
-                    department_id=body.department_id, item_id=body.item_id,
-                    escalated_to="hospital_manager", escalation_level=1,
-                ))
-        elif new_status == "critical_level":
-            await db.alerts.insert_one(_new_alert(
-                type="critical_level", severity="warning",
-                title=f"Critical stock — {item['name_en']}",
-                message=f"Balance in {dept['code']} = {body.balance} (critical threshold {item['critical_threshold']})",
-                department_id=body.department_id, item_id=body.item_id,
-            ))
-        elif new_status == "available" and previous_status in ("zero_level", "critical_level"):
-            # Mark briefly as back_in_stock for visibility
-            await db.stock_entries.update_one(
-                {"id": entry_id}, {"$set": {"status": "back_in_stock", "shortage_start": None}}
-            )
+        item_inner = await db.items.find_one({"id": body.item_id}, {"_id": 0}, session=session)
+        if not item_inner:
+            raise HTTPException(status_code=404, detail="Item not found")
+        dept_inner = await db.departments.find_one(
+            {"id": body.department_id}, {"_id": 0}, session=session
+        )
+        if not dept_inner:
+            raise HTTPException(status_code=404, detail="Department not found")
+
+        existing = await db.stock_entries.find_one(
+            {"department_id": body.department_id, "item_id": body.item_id},
+            session=session,
+        )
+        previous_balance = existing["balance"] if existing else 0
+        previous_status = existing["status"] if existing else None
+        quantity_change = body.balance - previous_balance
+        entry_type = "opening_balance" if existing is None else "adjustment"
+
+        # Determine final stock status upfront (including back_in_stock) so stock_entry
+        # is written exactly once with its final state.
+        raw_status = _calc_stock_status(body.balance, item_inner["min_level"], item_inner["critical_threshold"])
+        if raw_status == "available" and previous_status in ("zero_level", "critical_level"):
             new_status = "back_in_stock"
-            await db.alerts.insert_one(_new_alert(
-                type="zero_level", severity="info",
-                title=f"Item back in stock — {item['name_en']}",
-                message=f"Department: {dept['code']} — new balance {body.balance}",
-                department_id=body.department_id, item_id=body.item_id,
-            ))
+        else:
+            new_status = raw_status
 
-    await write_audit(user, "upsert_stock", "stock_entries", entity_id=entry_id,
-                      old_value={"balance": previous_balance, "status": previous_status},
-                      new_value={"balance": body.balance, "status": new_status},
-                      request=request)
-    return {"status": "ok", "stock_status": new_status}
+        shortage_start = None
+        if new_status in ("zero_level", "critical_level"):
+            shortage_start = (
+                existing.get("shortage_start") if existing and existing.get("shortage_start")
+                else _now_iso()
+            )
+
+        entry_id = existing["id"] if existing else _new_id()
+        previous_lv = existing.get("ledger_version", 0) if existing else 0
+
+        if existing is None:
+            # New stock entry
+            seq_no = 1
+        elif previous_lv == 0:
+            # Legacy stock entry without v2 ledger history — create cutover baseline first
+            await ledger_mod.ensure_v2_baseline(
+                db,
+                department_id=body.department_id,
+                item_id=body.item_id,
+                entry_id=entry_id,
+                balance=previous_balance,
+                user_id=user["id"],
+                user_name=user["full_name"],
+                idempotency_key=f"baseline:{body.department_id}:{body.item_id}",
+                status=_calc_stock_status(previous_balance, item_inner["min_level"], item_inner["critical_threshold"]),
+                source="ledger_v2_cutover",
+                session=session,
+            )
+            seq_no = 2
+        else:
+            # Existing v2 entry
+            seq_no = previous_lv + 1
+
+        entry_doc = {
+            "department_id": body.department_id,
+            "item_id": body.item_id,
+            "balance": body.balance,
+            "status": new_status,
+            "last_updated_by": user["id"],
+            "last_updated_by_name": user["full_name"],
+            "last_updated_at": _now_iso(),
+            "shortage_start": shortage_start,
+            "notes": body.notes,
+        }
+        if existing:
+            filter_doc = {"id": entry_id, "balance": previous_balance}
+            if previous_lv >= 1:
+                filter_doc["ledger_version"] = previous_lv
+            else:
+                filter_doc["$or"] = [{"ledger_version": {"$exists": False}}, {"ledger_version": 0}]
+            upd = await db.stock_entries.update_one(
+                filter_doc, {"$set": {**entry_doc, "ledger_version": seq_no}}, session=session
+            )
+            if upd.matched_count != 1:
+                raise HTTPException(status_code=409, detail="Concurrent modification: please retry.")
+        else:
+            await db.stock_entries.insert_one({"id": entry_id, **entry_doc, "ledger_version": seq_no}, session=session)
+        _check_fail_point(fail_after, "stock_update")
+
+        # Alerts — inside the transaction so they roll back atomically with the ledger
+        if new_status != previous_status:
+            if new_status == "zero_level":
+                sev = "critical" if item_inner.get("is_life_saving") else "danger"
+                await db.alerts.insert_one(_new_alert(
+                    type="zero_level", severity=sev,
+                    title=f"Zero stock — {item_inner['name_en']}",
+                    message=f"Balance in {dept_inner['code']} reached zero",
+                    department_id=body.department_id, item_id=body.item_id,
+                ), session=session)
+                if item_inner.get("is_life_saving"):
+                    await db.alerts.insert_one(_new_alert(
+                        type="life_saving_item", severity="critical",
+                        title=f"URGENT: Life-saving item out of stock — {item_inner['name_en']}",
+                        message=f"Department: {dept_inner['code']} — immediate action required",
+                        department_id=body.department_id, item_id=body.item_id,
+                        escalated_to="hospital_manager", escalation_level=1,
+                    ), session=session)
+            elif new_status == "critical_level":
+                await db.alerts.insert_one(_new_alert(
+                    type="critical_level", severity="warning",
+                    title=f"Critical stock — {item_inner['name_en']}",
+                    message=f"Balance in {dept_inner['code']} = {body.balance} (critical threshold {item_inner['critical_threshold']})",
+                    department_id=body.department_id, item_id=body.item_id,
+                ), session=session)
+            elif new_status == "back_in_stock":
+                await db.alerts.insert_one(_new_alert(
+                    type="zero_level", severity="info",
+                    title=f"Item back in stock — {item_inner['name_en']}",
+                    message=f"Department: {dept_inner['code']} — new balance {body.balance}",
+                    department_id=body.department_id, item_id=body.item_id,
+                ), session=session)
+        _check_fail_point(fail_after, "alert_insert")
+
+        await write_audit(
+            user, "upsert_stock", "stock_entries", entity_id=entry_id,
+            old_value={"balance": previous_balance if existing else None, "status": previous_status},
+            new_value={"balance": body.balance, "status": new_status, "idempotency_key": idem_key},
+            request=request,
+            session=session,
+        )
+        _check_fail_point(fail_after, "audit_insert")
+
+        # Final, complete, immutable Ledger v2 record — inserted once
+        txn_doc = ledger_mod.build_ledger_entry(
+            department_id=body.department_id,
+            item_id=body.item_id,
+            entry_type=entry_type,
+            sequence_no=seq_no,
+            previous_balance=previous_balance,
+            quantity_change=quantity_change,
+            new_balance=body.balance,
+            user_id=user["id"],
+            user_name=user["full_name"],
+            actor_type="user",
+            source="upsert_stock",
+            idempotency_key=idem_key,
+            status=new_status,
+            entry_id=entry_id,
+            # Extra fields for audit trail
+            reason=body.notes,
+        )
+        await ledger_mod.insert_ledger_entry(db, txn_doc, session=session)
+        _check_fail_point(fail_after, "ledger_insert")
+
+        return {"status": "ok", "stock_status": new_status}
+
+    try:
+        async with await client.start_session() as session:
+            result = await session.with_transaction(_txn_callback)
+    except _TxnTestFailure as exc:
+        logger.warning("Test-injected transaction failure: %s", exc)
+        raise HTTPException(status_code=503, detail="Stock update could not be completed. Please retry.")
+    except DuplicateKeyError:
+        prior = await db.stock_transactions.find_one({"idempotency_key": idem_key, "schema_version": 2}, {"_id": 0})
+        if prior:
+            _validate_idempotent_replay(prior, source="upsert_stock", department_id=body.department_id,
+                                        item_id=body.item_id, entry_type=prior.get("entry_type", "adjustment"),
+                                        new_balance=body.balance)
+            return {"status": "ok", "stock_status": prior.get("status"), "idempotent_replay": True}
+        # Baseline race — retry once if another transaction created the cutover baseline
+        baseline_key = f"baseline:{body.department_id}:{body.item_id}"
+        baseline = await db.stock_transactions.find_one(
+            {"idempotency_key": baseline_key, "schema_version": 2}, {"_id": 0}
+        )
+        if baseline:
+            try:
+                async with await client.start_session() as _session2:
+                    result = await _session2.with_transaction(_txn_callback)
+                return result
+            except DuplicateKeyError:
+                prior2 = await db.stock_transactions.find_one(
+                    {"idempotency_key": idem_key, "schema_version": 2}, {"_id": 0}
+                )
+                if prior2:
+                    _validate_idempotent_replay(prior2, source="upsert_stock",
+                                                department_id=body.department_id,
+                                                item_id=body.item_id,
+                                                entry_type=prior2.get("entry_type", "adjustment"),
+                                                new_balance=body.balance)
+                    return {"status": "ok", "stock_status": prior2.get("status"), "idempotent_replay": True}
+                raise HTTPException(status_code=409, detail="Write conflict. Please retry.")
+            except HTTPException:
+                raise
+            except Exception as exc:
+                logger.exception("Unexpected error in upsert_stock baseline-race retry", exc_info=exc)
+                raise HTTPException(status_code=503, detail="Stock update could not be completed. Please retry.")
+        raise HTTPException(status_code=409, detail="Write conflict. Please retry.")
+
+    return result
 
 
 @api.get("/stock/transactions")
@@ -538,6 +705,7 @@ async def list_transactions(
         d["item"] = item_map.get(d.get("item_id"))
         d["department"] = dept_map.get(d.get("department_id"))
     return docs
+
 
 
 # ===== STOCK ISSUE (Reserve Control + Escalation) =====
@@ -677,7 +845,7 @@ _TXN_HOOKS_ACTIVE = (
     and os.environ.get("TRANSACTION_TEST_HOOKS_ENABLED", "").lower() == "true"
 )
 _VALID_FAIL_POINTS = frozenset(
-    {"transaction_insert", "stock_update", "alert_insert", "audit_insert"}
+    {"transaction_insert", "stock_update", "alert_insert", "audit_insert", "ledger_insert"}
 )
 
 
@@ -712,6 +880,8 @@ async def stock_issue_execute(
         if user.get("department_id") != body.department_id:
             raise HTTPException(status_code=403, detail="Cannot issue stock for another department")
 
+    _check_reserved_idempotency_key(body.idempotency_key)
+
     # ---- Pre-transaction fast 404 guards (no session needed) ----
     if not await db.items.find_one({"id": body.item_id}, {"_id": 0}):
         raise HTTPException(status_code=404, detail="Item not found")
@@ -720,8 +890,13 @@ async def stock_issue_execute(
 
     # ---- Fast idempotency pre-check (avoids starting a transaction for replays) ----
     idem_key = body.idempotency_key or _new_id()
-    prior = await db.stock_transactions.find_one({"idempotency_key": idem_key}, {"_id": 0})
+    prior = await db.stock_transactions.find_one({"idempotency_key": idem_key, "schema_version": 2}, {"_id": 0})
     if prior:
+        _validate_idempotent_replay(prior, source="stock_issue", department_id=body.department_id,
+                                    item_id=body.item_id, entry_type="issue",
+                                    quantity_change=-body.quantity,
+                                    reference_no=body.reference_no or None,
+                                    approval_id=body.approval_id or None)
         return _build_idempotent_replay(prior)
 
     # ---- Test-hook header (ignored outside test environment) ----
@@ -736,9 +911,14 @@ async def stock_issue_execute(
     async def _txn_callback(session):
         # 1. Recheck idempotency key inside the transaction
         prior_inner = await db.stock_transactions.find_one(
-            {"idempotency_key": idem_key}, {"_id": 0}, session=session
+            {"idempotency_key": idem_key, "schema_version": 2}, {"_id": 0}, session=session
         )
         if prior_inner:
+            _validate_idempotent_replay(prior_inner, source="stock_issue", department_id=body.department_id,
+                                        item_id=body.item_id, entry_type="issue",
+                                        quantity_change=-body.quantity,
+                                        reference_no=body.reference_no or None,
+                                        approval_id=body.approval_id or None)
             return _build_idempotent_replay(prior_inner), None
 
         # 2. Read item, dept, threshold, and stock entry under the session
@@ -784,34 +964,33 @@ async def stock_issue_execute(
             "critical_level" if projected < threshold["critical_level"] else "available"
         )
 
-        # 5. Insert transaction (idempotency_key unique index is the concurrency guard)
+        # 5. Generate all IDs before any writes (so the final record is complete in one insert)
         txn_id = _new_id()
-        txn_doc = {
-            "id": txn_id,
-            "idempotency_key": idem_key,
-            "department_id": body.department_id,
-            "item_id": body.item_id,
-            "entry_type": "issue",
-            "quantity_change": -body.quantity,
-            "previous_balance": previous_balance,
-            "new_balance": projected,
-            "delta": -body.quantity,
-            "status": db_status,
-            "user_id": user["id"],
-            "user_name": user["full_name"],
-            "created_at": _now_iso(),
-            "reason": body.notes,
-            "reference_no": body.reference_no,
-            "override_flag": decision["override"],
-            "override_reason": body.override_reason if decision["override"] else None,
-            "approval_id": body.approval_id,
-            "decision_rule": decision["rule"],
-            "alert_id": None,
-            "alert_severity": None,
-            "entry_id": None,
-        }
-        await db.stock_transactions.insert_one(txn_doc, session=session)
-        _check_fail_point(fail_after, "transaction_insert")
+        entry_id = existing["id"] if existing else _new_id()
+        alert_id = _new_id() if decision["create_alert"] else None
+
+        previous_lv = existing.get("ledger_version", 0) if existing else 0
+
+        if existing is None:
+            issue_seq_no = 1
+        elif previous_lv == 0:
+            # Legacy cutover baseline
+            await ledger_mod.ensure_v2_baseline(
+                db,
+                department_id=body.department_id,
+                item_id=body.item_id,
+                entry_id=entry_id,
+                balance=previous_balance,
+                user_id=user["id"],
+                user_name=user["full_name"],
+                idempotency_key=f"baseline:{body.department_id}:{body.item_id}",
+                status=_calc_stock_status(previous_balance, item_inner["min_level"], item_inner["critical_threshold"]),
+                source="ledger_v2_cutover",
+                session=session,
+            )
+            issue_seq_no = 2
+        else:
+            issue_seq_no = previous_lv + 1
 
         # 6. Upsert stock entry — filter on exact previous_balance to guard against
         #    lost-update races; matched_count == 0 means a concurrent write won.
@@ -833,9 +1012,14 @@ async def stock_issue_execute(
             "notes": body.notes,
         }
         if existing:
+            filter_doc = {"id": entry_id, "balance": previous_balance}
+            if previous_lv >= 1:
+                filter_doc["ledger_version"] = previous_lv
+            else:
+                filter_doc["$or"] = [{"ledger_version": {"$exists": False}}, {"ledger_version": 0}]
             upd = await db.stock_entries.update_one(
-                {"id": existing["id"], "balance": previous_balance},
-                {"$set": entry_doc},
+                filter_doc,
+                {"$set": {**entry_doc, "ledger_version": issue_seq_no}},
                 session=session,
             )
             if upd.matched_count != 1:
@@ -843,13 +1027,9 @@ async def stock_issue_execute(
                     status_code=409,
                     detail="Concurrent modification: stock balance changed. Please retry.",
                 )
-            entry_id = existing["id"]
         else:
-            entry_id = _new_id()
-            await db.stock_entries.insert_one({"id": entry_id, **entry_doc}, session=session)
-        await db.stock_transactions.update_one(
-            {"id": txn_id}, {"$set": {"entry_id": entry_id}}, session=session
-        )
+            await db.stock_entries.insert_one({"id": entry_id, **entry_doc, "ledger_version": issue_seq_no}, session=session)
+        _check_fail_point(fail_after, "transaction_insert")
         _check_fail_point(fail_after, "stock_update")
 
         # 7. Alert (if required)
@@ -869,7 +1049,6 @@ async def stock_issue_execute(
             if decision["override"] and body.override_reason:
                 msg += f" Override reason: {body.override_reason}."
 
-            alert_id = _new_id()
             alert_doc = _new_alert(
                 type=atype, severity=sev,
                 title=title, message=msg,
@@ -879,14 +1058,8 @@ async def stock_issue_execute(
             )
             alert_doc["id"] = alert_id
             await db.alerts.insert_one(alert_doc, session=session)
-            await db.stock_transactions.update_one(
-                {"id": txn_id},
-                {"$set": {"alert_id": alert_id, "alert_severity": sev}},
-                session=session,
-            )
             _check_fail_point(fail_after, "alert_insert")
 
-            # Capture email payload for post-commit dispatch (no external calls inside txn)
             if decision["escalate_to"]:
                 extra_rows = [
                     ("Previous balance",   str(previous_balance)),
@@ -930,6 +1103,37 @@ async def stock_issue_execute(
         )
         _check_fail_point(fail_after, "audit_insert")
 
+        # 9. One final, complete, immutable Ledger v2 record — no update_one after this
+        seq_no = issue_seq_no
+        txn_doc = ledger_mod.build_ledger_entry(
+            department_id=body.department_id,
+            item_id=body.item_id,
+            entry_type="issue",
+            sequence_no=seq_no,
+            previous_balance=previous_balance,
+            quantity_change=-body.quantity,
+            new_balance=projected,
+            user_id=user["id"],
+            user_name=user["full_name"],
+            actor_type="user",
+            source="stock_issue",
+            idempotency_key=idem_key,
+            status=db_status,
+            entry_id=entry_id,
+            transaction_id=txn_id,
+            reference_no=body.reference_no,
+            # Extra fields for idempotent replay and audit trail
+            alert_id=alert_id,
+            alert_severity=alert_doc["severity"] if alert_doc else None,
+            reason=body.notes,
+            override_flag=decision["override"],
+            override_reason=body.override_reason if decision["override"] else None,
+            approval_id=body.approval_id,
+            decision_rule=decision["rule"],
+        )
+        await db.stock_transactions.insert_one(txn_doc, session=session)
+        _check_fail_point(fail_after, "ledger_insert")
+
         result = {
             "success": True,
             "entry_id": entry_id,
@@ -938,7 +1142,7 @@ async def stock_issue_execute(
             "current_balance": projected,
             "status": db_status,
             "decision": decision,
-            "alert_id": alert_doc["id"] if alert_doc else None,
+            "alert_id": alert_id,
             "alert_severity": alert_doc["severity"] if alert_doc else None,
         }
         return result, email_payload
@@ -954,13 +1158,49 @@ async def stock_issue_execute(
             detail="Stock issue could not be completed. Please retry.",
         )
     except DuplicateKeyError:
-        # Concurrent request committed first under the same idempotency key
+        # Check for user-operation idempotency match first
         prior = await db.stock_transactions.find_one(
-            {"idempotency_key": idem_key}, {"_id": 0}
+            {"idempotency_key": idem_key, "schema_version": 2}, {"_id": 0}
         )
         if prior:
+            _validate_idempotent_replay(prior, source="stock_issue", department_id=body.department_id,
+                                        item_id=body.item_id, entry_type="issue",
+                                        quantity_change=-body.quantity,
+                                        reference_no=body.reference_no or None,
+                                        approval_id=body.approval_id or None)
             return _build_idempotent_replay(prior)
-        raise
+        # Check if baseline race caused the DuplicateKeyError — retry once
+        baseline_key = f"baseline:{body.department_id}:{body.item_id}"
+        baseline = await db.stock_transactions.find_one(
+            {"idempotency_key": baseline_key, "schema_version": 2}, {"_id": 0}
+        )
+        if baseline:
+            try:
+                async with await client.start_session() as _session2:
+                    outcome = await _session2.with_transaction(_txn_callback)
+                result, email_payload = outcome
+                if email_payload:
+                    background.add_task(_escalation_email_task, db, **email_payload)
+                return result
+            except DuplicateKeyError:
+                prior2 = await db.stock_transactions.find_one(
+                    {"idempotency_key": idem_key, "schema_version": 2}, {"_id": 0}
+                )
+                if prior2:
+                    _validate_idempotent_replay(prior2, source="stock_issue",
+                                                department_id=body.department_id,
+                                                item_id=body.item_id, entry_type="issue",
+                                                quantity_change=-body.quantity,
+                                                reference_no=body.reference_no or None,
+                                                approval_id=body.approval_id or None)
+                    return _build_idempotent_replay(prior2)
+                raise HTTPException(status_code=409, detail="Write conflict. Please retry.")
+            except HTTPException:
+                raise
+            except Exception as exc:
+                logger.exception("Unexpected error in stock_issue baseline-race retry", exc_info=exc)
+                raise HTTPException(status_code=503, detail="Stock issue could not be completed. Please retry.")
+        raise HTTPException(status_code=409, detail="Write conflict. Please retry.")
     except HTTPException:
         raise
     except Exception as exc:
@@ -1241,64 +1481,245 @@ async def dispatch_request(
 @api.post("/requests/{req_id}/receive")
 async def receive_request(
     req_id: str, body: ReceiveBody, request: Request,
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
     user: dict = Depends(require_roles(
         "super_admin", "department_head", "department_stock_officer", "supply_officer"
     )),
 ):
+    # Fast guard before starting a transaction
     req = await db.stock_requests.find_one({"id": req_id})
     if not req:
         raise HTTPException(status_code=404, detail="Request not found")
     if user["role"] in ("department_head", "department_stock_officer") and user.get("department_id") != req["department_id"]:
         raise HTTPException(status_code=403, detail="You cannot receive for a different department")
 
-    new_received = req["received_qty"] + body.received_qty
-    if new_received >= req["dispatched_qty"]:
-        new_status = "received"
-        closed = _now_iso()
-    else:
-        new_status = "partially_received"
-        closed = None
-    validate_request_transition(req["status"], new_status)
+    _check_reserved_idempotency_key(idempotency_key)
 
-    update = {
-        "received_qty": new_received,
-        "received_at": _now_iso(),
-        "status": new_status,
-        "closed_at": closed,
-    }
-    await db.stock_requests.update_one({"id": req_id}, {"$set": update})
+    idem_key = idempotency_key or _new_id()
 
-    # Auto-increase department stock balance
-    item = await db.items.find_one({"id": req["item_id"]})
-    entry = await db.stock_entries.find_one({"department_id": req["department_id"], "item_id": req["item_id"]})
-    if entry:
-        new_balance = entry["balance"] + body.received_qty
-        new_st = _calc_stock_status(new_balance, item["min_level"], item["critical_threshold"])
-        # if previous status was zero/critical and we now hit available
-        if entry["status"] in ("zero_level", "critical_level") and new_st == "available":
+    # Idempotency lookup BEFORE quantity validation — a legitimate replay after a full receive
+    # must return 200 even though remaining is now 0.
+    prior = await db.stock_transactions.find_one({"idempotency_key": idem_key, "schema_version": 2}, {"_id": 0})
+    if prior:
+        _validate_idempotent_replay(prior, source="receive_request", department_id=req["department_id"],
+                                    item_id=req["item_id"], entry_type="receive",
+                                    request_id=req_id, quantity_change=body.received_qty)
+        return {"status": "ok", "idempotent_replay": True}
+
+    # Outer convenience check (non-authoritative — authoritative validation is inside the transaction)
+    _RECEIVABLE_STATES = {"dispatched", "partially_received"}
+    if req["status"] not in _RECEIVABLE_STATES:
+        raise HTTPException(status_code=409, detail=f"Request is in state '{req['status']}' and cannot be received")
+    if body.received_qty <= 0:
+        raise HTTPException(status_code=422, detail="received_qty must be positive")
+    remaining = req["dispatched_qty"] - req["received_qty"]
+    if body.received_qty > remaining:
+        raise HTTPException(status_code=422, detail=f"received_qty {body.received_qty} exceeds remaining dispatched quantity {remaining}")
+
+    fail_after = request.headers.get("X-Test-Txn-Fail-After") if _TXN_HOOKS_ACTIVE else None
+
+    async def _txn_callback(session):
+        prior_inner = await db.stock_transactions.find_one(
+            {"idempotency_key": idem_key, "schema_version": 2}, {"_id": 0}, session=session
+        )
+        if prior_inner:
+            _validate_idempotent_replay(prior_inner, source="receive_request",
+                                        department_id=req["department_id"],
+                                        item_id=req["item_id"], entry_type="receive",
+                                        request_id=req_id, quantity_change=body.received_qty)
+            return {"idempotent_replay": True}
+
+        req_inner = await db.stock_requests.find_one({"id": req_id}, session=session)
+        if not req_inner:
+            raise HTTPException(status_code=404, detail="Request not found")
+
+        # Authoritative state guard inside transaction (after replay check, before quantity check)
+        if req_inner["status"] not in {"dispatched", "partially_received"}:
+            raise HTTPException(status_code=409, detail=f"Request is in state '{req_inner['status']}' and cannot be received")
+
+        # Authoritative quantity revalidation inside transaction (runs on every retry)
+        remaining_inner = req_inner["dispatched_qty"] - req_inner["received_qty"]
+        if body.received_qty <= 0:
+            raise HTTPException(status_code=422, detail="received_qty must be positive")
+        if body.received_qty > remaining_inner:
+            raise HTTPException(status_code=422, detail=f"received_qty {body.received_qty} exceeds remaining {remaining_inner}")
+
+        new_received = req_inner["received_qty"] + body.received_qty
+        if new_received >= req_inner["dispatched_qty"]:
+            new_req_status = "received"
+            closed = _now_iso()
+        else:
+            new_req_status = "partially_received"
+            closed = None
+        validate_request_transition(req_inner["status"], new_req_status)
+
+        previous_received_qty = req_inner["received_qty"]
+        previous_request_status = req_inner["status"]
+        req_upd = await db.stock_requests.update_one(
+            {"id": req_id, "received_qty": previous_received_qty, "status": previous_request_status},
+            {"$set": {
+                "received_qty": new_received,
+                "received_at": _now_iso(),
+                "status": new_req_status,
+                "closed_at": closed,
+            }},
+            session=session,
+        )
+        if req_upd.matched_count != 1:
+            raise HTTPException(status_code=409, detail="Concurrent modification on request: please retry.")
+
+        item_inner = await db.items.find_one({"id": req_inner["item_id"]}, session=session)
+        if not item_inner:
+            raise HTTPException(status_code=404, detail="Item not found")
+
+        entry = await db.stock_entries.find_one(
+            {"department_id": req_inner["department_id"], "item_id": req_inner["item_id"]},
+            session=session,
+        )
+
+        previous_balance = entry["balance"] if entry else 0
+        previous_status = entry["status"] if entry else None
+        new_balance = previous_balance + body.received_qty
+        raw_st = _calc_stock_status(new_balance, item_inner["min_level"], item_inner["critical_threshold"])
+        if raw_st == "available" and previous_status in ("zero_level", "critical_level"):
             new_st = "back_in_stock"
-        await db.stock_entries.update_one({"id": entry["id"]}, {"$set": {
-            "balance": new_balance, "status": new_st,
-            "last_updated_by": user["id"], "last_updated_by_name": user["full_name"],
-            "last_updated_at": _now_iso(),
-            "shortage_start": None if new_st in ("available", "back_in_stock") else entry.get("shortage_start"),
-        }})
-        await db.stock_transactions.insert_one({
-            "id": _new_id(),
-            "department_id": req["department_id"],
-            "item_id": req["item_id"],
-            "previous_balance": entry["balance"],
-            "new_balance": new_balance,
-            "delta": body.received_qty,
-            "status": new_st,
-            "user_id": user["id"],
-            "user_name": user["full_name"],
-            "created_at": _now_iso(),
-            "reason": f"Receipt for request {req['request_number']}",
-        })
+        else:
+            new_st = raw_st
 
-    await write_audit(user, "receive_request", "requests", entity_id=req_id,
-                      new_value={"received": body.received_qty}, request=request)
+        shortage_start = None
+        if new_st in ("zero_level", "critical_level"):
+            shortage_start = (
+                entry.get("shortage_start") if entry and entry.get("shortage_start")
+                else _now_iso()
+            )
+
+        entry_id = entry["id"] if entry else _new_id()
+        previous_lv = entry.get("ledger_version", 0) if entry else 0
+
+        if entry is None:
+            receive_seq_no = 1
+        elif previous_lv == 0:
+            # Legacy cutover baseline
+            await ledger_mod.ensure_v2_baseline(
+                db,
+                department_id=req_inner["department_id"],
+                item_id=req_inner["item_id"],
+                entry_id=entry_id,
+                balance=previous_balance,
+                user_id=user["id"],
+                user_name=user["full_name"],
+                idempotency_key=f"baseline:{req_inner['department_id']}:{req_inner['item_id']}",
+                status=_calc_stock_status(previous_balance, item_inner["min_level"], item_inner["critical_threshold"]),
+                source="ledger_v2_cutover",
+                session=session,
+            )
+            receive_seq_no = 2
+        else:
+            receive_seq_no = previous_lv + 1
+
+        entry_doc = {
+            "department_id": req_inner["department_id"],
+            "item_id": req_inner["item_id"],
+            "balance": new_balance,
+            "status": new_st,
+            "last_updated_by": user["id"],
+            "last_updated_by_name": user["full_name"],
+            "last_updated_at": _now_iso(),
+            "shortage_start": shortage_start,
+            "notes": None,
+        }
+        if entry:
+            filter_doc = {"id": entry_id, "balance": previous_balance}
+            if previous_lv >= 1:
+                filter_doc["ledger_version"] = previous_lv
+            else:
+                filter_doc["$or"] = [{"ledger_version": {"$exists": False}}, {"ledger_version": 0}]
+            upd = await db.stock_entries.update_one(
+                filter_doc, {"$set": {**entry_doc, "ledger_version": receive_seq_no}}, session=session
+            )
+            if upd.matched_count != 1:
+                raise HTTPException(status_code=409, detail="Concurrent modification: please retry.")
+        else:
+            await db.stock_entries.insert_one({"id": entry_id, **entry_doc, "ledger_version": receive_seq_no}, session=session)
+        _check_fail_point(fail_after, "stock_update")
+
+        txn_doc = ledger_mod.build_ledger_entry(
+            department_id=req_inner["department_id"],
+            item_id=req_inner["item_id"],
+            entry_type="receive",
+            sequence_no=receive_seq_no,
+            previous_balance=previous_balance,
+            quantity_change=body.received_qty,
+            new_balance=new_balance,
+            user_id=user["id"],
+            user_name=user["full_name"],
+            actor_type="user",
+            source="receive_request",
+            idempotency_key=idem_key,
+            status=new_st,
+            entry_id=entry_id,
+            reference_no=req_inner["request_number"],
+            # Pass request_id as extra (not reserved)
+            request_id=req_id,
+        )
+        await ledger_mod.insert_ledger_entry(db, txn_doc, session=session)
+        _check_fail_point(fail_after, "ledger_insert")
+
+        await write_audit(
+            user, "receive_request", "requests", entity_id=req_id,
+            new_value={"received": body.received_qty, "idempotency_key": idem_key},
+            request=request,
+            session=session,
+        )
+        return {"idempotent_replay": False}
+
+    try:
+        async with await client.start_session() as session:
+            result = await session.with_transaction(_txn_callback)
+    except _TxnTestFailure as exc:
+        raise HTTPException(status_code=503, detail="Receive could not be completed. Please retry.")
+    except DuplicateKeyError:
+        prior = await db.stock_transactions.find_one(
+            {"idempotency_key": idem_key, "schema_version": 2}, {"_id": 0}
+        )
+        if prior:
+            _validate_idempotent_replay(prior, source="receive_request",
+                                        department_id=req["department_id"],
+                                        item_id=req["item_id"], entry_type="receive",
+                                        request_id=req_id, quantity_change=body.received_qty)
+            return {"status": "ok", "idempotent_replay": True}
+        # Baseline race — retry once
+        baseline_key = f"baseline:{req['department_id']}:{req['item_id']}"
+        baseline = await db.stock_transactions.find_one(
+            {"idempotency_key": baseline_key, "schema_version": 2}, {"_id": 0}
+        )
+        if baseline:
+            try:
+                async with await client.start_session() as _session2:
+                    result = await _session2.with_transaction(_txn_callback)
+                if result.get("idempotent_replay"):
+                    return {"status": "ok", "idempotent_replay": True}
+                return {"status": "ok"}
+            except DuplicateKeyError:
+                prior2 = await db.stock_transactions.find_one(
+                    {"idempotency_key": idem_key, "schema_version": 2}, {"_id": 0}
+                )
+                if prior2:
+                    _validate_idempotent_replay(prior2, source="receive_request",
+                                                department_id=req["department_id"],
+                                                item_id=req["item_id"], entry_type="receive",
+                                                request_id=req_id, quantity_change=body.received_qty)
+                    return {"status": "ok", "idempotent_replay": True}
+                raise HTTPException(status_code=409, detail="Write conflict. Please retry.")
+            except HTTPException:
+                raise
+            except Exception as exc:
+                logger.exception("Unexpected error in receive baseline-race retry", exc_info=exc)
+                raise HTTPException(status_code=503, detail="Receive could not be completed. Please retry.")
+        raise HTTPException(status_code=409, detail="Write conflict. Please retry.")
+
+    if result.get("idempotent_replay"):
+        return {"status": "ok", "idempotent_replay": True}
     return {"status": "ok"}
 
 
@@ -1468,8 +1889,23 @@ async def items_import_commit(
         body = body[first:end if end != -1 else len(body)]
     if not body:
         raise HTTPException(status_code=400, detail="Empty file body")
+    async def _excel_audit_callback(*, session, item_id, dept_id, entry):
+        await write_audit(
+            user, "excel_stock_import", "stock_entries",
+            entity_id=item_id,
+            new_value={"department_id": dept_id, "balance": entry["new_balance"], "idempotency_key": entry["idempotency_key"]},
+            request=request,
+            session=session,
+        )
+
+    fail_after = request.headers.get("X-Test-Fail-After") if _TXN_HOOKS_ACTIVE else None
     try:
-        result = await excel_import.commit(db, body, user, include_manual_review=include_manual_review)
+        result = await excel_import.commit(db, body, user, include_manual_review=include_manual_review, client=client, audit_callback=_excel_audit_callback, fail_after=fail_after)
+    except excel_import.ExcelTestFailure as exc:
+        logger.warning("Test-injected Excel failure: %s", exc)
+        raise HTTPException(status_code=503, detail="Excel import could not be completed. Please retry.")
+    except excel_import.ExcelWriteConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Import failed: {e}")
     await write_audit(user, "import_excel", "items", new_value=result, request=request)
@@ -2040,6 +2476,11 @@ async def startup():
             "idempotency_key", unique=True,
             partialFilterExpression={"idempotency_key": {"$type": "string"}},
         )
+        await db.stock_transactions.create_index(
+            [("department_id", 1), ("item_id", 1), ("sequence_no", 1)],
+            unique=True,
+            partialFilterExpression={"schema_version": 2},
+        )
         await db.item_department_thresholds.create_index(
             [("item_id", 1), ("department_id", 1)], unique=True
         )
@@ -2052,7 +2493,7 @@ async def startup():
 
         if cfg.seed_enabled:
             try:
-                await seed_data(db)
+                await seed_data(db, client=client)
                 logger.info("Seed data ensured.")
             except Exception as e:
                 logger.exception("Seed failed: %s", e)
