@@ -5,6 +5,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from auth import hash_password
 from models import _new_id, _now_iso
+import ledger as ledger_mod
 
 
 SAMPLE_DEPARTMENTS = [
@@ -186,92 +187,135 @@ async def _ensure_users(db: AsyncIOMotorDatabase, dept_ids: dict) -> None:
             )
 
 
+_SAMPLE_STOCK = [
+    # ER
+    ("ER", "ETT-CUFF-2", 0),
+    ("ER", "ETT-CUFF-3", 12),
+    ("ER", "CRICO-KIT", 1),
+    ("ER", "IV-CANN-18", 18),
+    ("ER", "IV-CANN-20", 80),
+    ("ER", "GLOVE-M", 6),
+    ("ER", "MASK-N95", 0),
+    ("ER", "GAUZE-4x4", 35),
+    ("ER", "SYRINGE-5", 220),
+    ("ER", "DEFIB-PAD", 3),
+    ("ER", "BVM-ADULT", 0),
+    ("ER", "EPI-1MG", 22),
+    # ICU
+    ("ICU", "ETT-CUFF-2", 4),
+    ("ICU", "ETT-CUFF-3", 0),
+    ("ICU", "CRICO-KIT", 2),
+    ("ICU", "IV-CANN-18", 60),
+    ("ICU", "IV-CANN-20", 15),
+    ("ICU", "GLOVE-M", 25),
+    ("ICU", "MASK-N95", 110),
+    ("ICU", "GAUZE-4x4", 8),
+    ("ICU", "SYRINGE-5", 350),
+    ("ICU", "DEFIB-PAD", 1),
+    ("ICU", "BVM-ADULT", 2),
+    ("ICU", "EPI-1MG", 5),
+]
+
+
 async def _ensure_sample_stock(
     db: AsyncIOMotorDatabase,
     dept_ids: dict,
     item_ids: dict,
     admin_id: str,
     admin_name: str,
+    client=None,
 ) -> None:
-    sample_stock = [
-        # ER
-        ("ER", "ETT-CUFF-2", 0),
-        ("ER", "ETT-CUFF-3", 12),
-        ("ER", "CRICO-KIT", 1),
-        ("ER", "IV-CANN-18", 18),
-        ("ER", "IV-CANN-20", 80),
-        ("ER", "GLOVE-M", 6),
-        ("ER", "MASK-N95", 0),
-        ("ER", "GAUZE-4x4", 35),
-        ("ER", "SYRINGE-5", 220),
-        ("ER", "DEFIB-PAD", 3),
-        ("ER", "BVM-ADULT", 0),
-        ("ER", "EPI-1MG", 22),
-        # ICU
-        ("ICU", "ETT-CUFF-2", 4),
-        ("ICU", "ETT-CUFF-3", 0),
-        ("ICU", "CRICO-KIT", 2),
-        ("ICU", "IV-CANN-18", 60),
-        ("ICU", "IV-CANN-20", 15),
-        ("ICU", "GLOVE-M", 25),
-        ("ICU", "MASK-N95", 110),
-        ("ICU", "GAUZE-4x4", 8),
-        ("ICU", "SYRINGE-5", 350),
-        ("ICU", "DEFIB-PAD", 1),
-        ("ICU", "BVM-ADULT", 2),
-        ("ICU", "EPI-1MG", 5),
-    ]
-    for dept_code, item_code, balance in sample_stock:
+    if client is None:
+        raise RuntimeError("Seed stock writes require a transactional MongoDB client")
+    for dept_code, item_code, balance in _SAMPLE_STOCK:
         dept_id = dept_ids[dept_code]
         item_id = item_ids[item_code]
-        if await db.stock_entries.find_one({"department_id": dept_id, "item_id": item_id}):
-            continue
-        item_doc = await db.items.find_one({"id": item_id})
-        status = _calc_status(balance, item_doc["min_level"], item_doc["critical_threshold"])
-        await db.stock_entries.insert_one({
+
+        async def _pair_callback(session, _dept_id=dept_id, _item_id=item_id,
+                                 _balance=balance, _dept_code=dept_code):
+            await _seed_pair(db, _dept_id, _item_id, _balance, admin_id, admin_name,
+                             _dept_code, item_ids, session=session)
+
+        async with await client.start_session() as session:
+            await session.with_transaction(_pair_callback)
+
+
+async def _seed_pair(
+    db: AsyncIOMotorDatabase,
+    dept_id: str,
+    item_id: str,
+    balance: int,
+    admin_id: str,
+    admin_name: str,
+    dept_code: str,
+    item_ids: dict,
+    session=None,
+) -> None:
+    if await db.stock_entries.find_one(
+        {"department_id": dept_id, "item_id": item_id}, session=session
+    ):
+        return
+
+    item_doc = await db.items.find_one({"id": item_id}, session=session)
+    if not item_doc:
+        return
+
+    status = _calc_status(balance, item_doc["min_level"], item_doc["critical_threshold"])
+    stock_id = _new_id()
+    await db.stock_entries.insert_one({
+        "id": stock_id,
+        "department_id": dept_id,
+        "item_id": item_id,
+        "balance": balance,
+        "status": status,
+        "last_updated_by": admin_id,
+        "last_updated_by_name": admin_name,
+        "last_updated_at": _now_iso(),
+        "shortage_start": _now_iso() if status in ("zero_level", "critical_level") else None,
+        "notes": None,
+        "ledger_version": 1,
+    }, session=session)
+
+    # Write the v2 opening_balance ledger record directly into stock_transactions
+    idem_key = f"seed:{dept_id}:{item_id}"
+    ledger_entry = ledger_mod.build_ledger_entry(
+        department_id=dept_id,
+        item_id=item_id,
+        entry_type="opening_balance",
+        sequence_no=1,
+        previous_balance=0,
+        quantity_change=balance,
+        new_balance=balance,
+        user_id=admin_id,
+        user_name=admin_name,
+        actor_type="system",
+        source="seed",
+        idempotency_key=idem_key,
+        status=status,
+        entry_id=stock_id,
+        ledger_version=1,
+    )
+    await db.stock_transactions.insert_one(ledger_entry, session=session)
+
+    if status in ("zero_level", "critical_level"):
+        title = ("Zero stock" if status == "zero_level" else "Critical stock") + f" — {item_doc['name_en']}"
+        await db.alerts.insert_one({
             "id": _new_id(),
+            "type": status,
+            "severity": "critical" if status == "zero_level" else "warning",
+            "title": title,
+            "message": f"Current balance is {balance} in {dept_code}",
             "department_id": dept_id,
             "item_id": item_id,
-            "balance": balance,
-            "status": status,
-            "last_updated_by": admin_id,
-            "last_updated_by_name": admin_name,
-            "last_updated_at": _now_iso(),
-            "shortage_start": _now_iso() if status in ("zero_level", "critical_level") else None,
-            "notes": None,
-        })
-        await db.stock_transactions.insert_one({
-            "id": _new_id(),
-            "department_id": dept_id,
-            "item_id": item_id,
-            "previous_balance": None,
-            "new_balance": balance,
-            "delta": balance,
-            "status": status,
-            "user_id": admin_id,
-            "user_name": admin_name,
+            "request_id": None,
             "created_at": _now_iso(),
-            "reason": "seed",
-        })
-        if status in ("zero_level", "critical_level"):
-            title = ("Zero stock" if status == "zero_level" else "Critical stock") + f" — {item_doc['name_en']}"
-            await db.alerts.insert_one({
-                "id": _new_id(),
-                "type": status,
-                "severity": "critical" if status == "zero_level" else "warning",
-                "title": title,
-                "message": f"Current balance is {balance} in {dept_code}",
-                "department_id": dept_id,
-                "item_id": item_id,
-                "request_id": None,
-                "created_at": _now_iso(),
-                "acknowledged": False, "acknowledged_by": None, "acknowledged_at": None,
-            })
+            "acknowledged": False, "acknowledged_by": None, "acknowledged_at": None,
+        }, session=session)
 
 
-async def seed(db: AsyncIOMotorDatabase) -> None:
+async def seed(db: AsyncIOMotorDatabase, client=None) -> None:
     admin = await _ensure_admin(db)
     dept_ids = await _ensure_departments(db)
     item_ids = await _ensure_items(db)
     await _ensure_users(db, dept_ids)
-    await _ensure_sample_stock(db, dept_ids, item_ids, admin["id"], admin["full_name"])
+    await _ensure_sample_stock(db, dept_ids, item_ids, admin["id"], admin["full_name"], client=client)

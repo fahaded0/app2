@@ -1,11 +1,88 @@
 """Excel (.xlsx) import for items. Matching order: barcode -> internal_code -> name -> manual_review."""
+import hashlib
 import io
+import os
 from typing import Optional
+
+_EXCEL_TXN_HOOKS_ACTIVE = (
+    os.environ.get("APP_ENV") == "test" and
+    os.environ.get("TRANSACTION_TEST_HOOKS_ENABLED") == "true"
+)
+
+
+class ExcelTestFailure(Exception):
+    """Raised by _excel_check_fail_point during test-injected transactional failures."""
+
+
+class ExcelWriteConflict(Exception):
+    """Raised when a row transaction fails with a write conflict after one retry."""
+
+
+class ExcelCASConflict(Exception):
+    """Raised when stock_entries CAS update matches zero rows (concurrent modification)."""
+
+
+def _excel_check_fail_point(fail_after, stage: str) -> None:
+    if _EXCEL_TXN_HOOKS_ACTIVE and fail_after == stage:
+        raise ExcelTestFailure(f"[test] Forced failure at {stage}")
+
+
+def _validate_excel_replay(
+    prior: dict,
+    *,
+    department_id: str,
+    item_id: str,
+    new_balance: int,
+) -> None:
+    """Validate a prior ledger record is genuinely this row's replay.
+    Raises ExcelWriteConflict if any field mismatches — prevents key-namespace collisions.
+    item_id is mandatory and always compared against the prior record.
+    """
+    checks = [
+        ("schema_version", 2),
+        ("source", "excel_import"),
+        ("entry_type", "physical_count"),
+        ("department_id", department_id),
+        ("item_id", item_id),
+        ("new_balance", new_balance),
+    ]
+    mismatches = [f for f, exp in checks if prior.get(f) != exp]
+    if mismatches:
+        raise ExcelWriteConflict(
+            f"Idempotency key reused with mismatched payload in Excel import: {mismatches}"
+        )
+
+
+async def _resolve_item_id_for_replay(db, entry: dict, session=None) -> str:
+    """Resolve the expected item_id before calling _validate_excel_replay.
+
+    Resolution order: existing_id → internal_code lookup → barcode lookup → conflict.
+    If lookup fails, the idempotency key was reused for a different item — raise ExcelWriteConflict.
+    """
+    if entry.get("existing_id"):
+        return entry["existing_id"]
+    if entry.get("internal_code"):
+        doc = await db.items.find_one(
+            {"internal_code": entry["internal_code"]}, {"_id": 0}, session=session
+        )
+        if doc:
+            return doc["id"]
+    if entry.get("barcode"):
+        doc = await db.items.find_one(
+            {"barcode": entry["barcode"]}, {"_id": 0}, session=session
+        )
+        if doc:
+            return doc["id"]
+    raise ExcelWriteConflict(
+        "Idempotency key reused but expected item cannot be identified — refusing to skip"
+    )
 
 from openpyxl import load_workbook
 from motor.motor_asyncio import AsyncIOMotorDatabase
+from pymongo.errors import DuplicateKeyError
 
 from models import _new_id, _now_iso
+import ledger as ledger_mod
 
 # Expected headers (lowercased). All optional except internal_code OR barcode.
 EXPECTED_HEADERS = [
@@ -143,8 +220,12 @@ async def commit(
     user: dict,
     *,
     include_manual_review: bool = False,
+    client=None,
+    audit_callback=None,
+    fail_after=None,
 ) -> dict:
     """Apply the import. Returns a summary of created/updated counts."""
+    workbook_sha = hashlib.sha256(file_bytes).hexdigest()
     plan = await analyse(db, file_bytes)
     departments = {d["code"]: d for d in await db.departments.find({}, {"_id": 0}).to_list(500)}
     created = 0
@@ -157,82 +238,82 @@ async def commit(
         rows_to_process += plan["manual_review"]
 
     for entry in rows_to_process:
-        # Resolve / create item
-        if entry["existing_id"]:
-            item_id = entry["existing_id"]
-            update_doc = {k: v for k, v in {
-                "barcode": entry["barcode"],
-                "name_en": entry["name"],
-                "name_ar": entry["name"],
-                "category": entry["category"],
-                "unit": entry["unit"],
-                "min_level": entry["min_level"],
-                "critical_threshold": entry["critical_threshold"],
-                "max_level": entry["max_level"],
-                "updated_at": _now_iso(),
-            }.items() if v not in (None, "")}
-            if update_doc:
-                await db.items.update_one({"id": item_id}, {"$set": update_doc})
-                updated += 1
-        else:
-            # Build a new item — internal_code required for creation
-            if not entry["internal_code"]:
-                skipped += 1
-                continue
-            item_id = _new_id()
-            await db.items.insert_one({
-                "id": item_id,
-                "internal_code": entry["internal_code"],
-                "barcode": entry["barcode"],
-                "udi": None,
-                "gtin": None,
-                "name_ar": entry["name"] or entry["internal_code"],
-                "name_en": entry["name"] or entry["internal_code"],
-                "category": entry["category"] or "Other",
-                "unit": entry["unit"] or "PCS",
-                "min_level": entry["min_level"],
-                "critical_threshold": entry["critical_threshold"],
-                "max_level": entry["max_level"],
-                "reorder_qty": 0,
-                "lead_time_days": 0,
-                "alternative_item_id": None,
-                "is_life_saving": False,
-                "is_crash_cart": False,
-                "requires_expiry": False,
-                "supplier": None,
-                "is_active": True,
-                "notes": None,
-                "created_at": _now_iso(),
-                "updated_at": _now_iso(),
-            })
-            created += 1
+        row_number = entry.get("row", 0)
 
-        # Optionally upsert stock balance per department
+        # For rows with stock updates, use a per-row transaction with idempotency guard
         if entry["balance"] is not None and entry["department_code"]:
             dept = departments.get(entry["department_code"])
             if not dept:
+                skipped += 1
                 continue
-            item = await db.items.find_one({"id": item_id})
-            status = _calc_status(entry["balance"], item["min_level"], item["critical_threshold"])
-            existing = await db.stock_entries.find_one(
-                {"department_id": dept["id"], "item_id": item_id}
+
+            if client is None:
+                raise RuntimeError("client is required for stock-changing Excel rows")
+
+            idem_key = ledger_mod.workbook_row_idempotency_key(file_bytes, row_number)
+
+            # Pre-transaction idempotency check — skip row if already processed
+            prior = await db.stock_transactions.find_one(
+                {"idempotency_key": idem_key, "schema_version": 2}, {"_id": 0}
             )
-            stock_doc = {
-                "department_id": dept["id"],
-                "item_id": item_id,
-                "balance": entry["balance"],
-                "status": status,
-                "last_updated_by": user["id"],
-                "last_updated_by_name": user["full_name"],
-                "last_updated_at": _now_iso(),
-                "shortage_start": _now_iso() if status in ("zero_level", "critical_level") else None,
-                "notes": "Excel import",
-            }
-            if existing:
-                await db.stock_entries.update_one({"id": existing["id"]}, {"$set": stock_doc})
-            else:
-                await db.stock_entries.insert_one({"id": _new_id(), **stock_doc})
+            if prior:
+                expected_item_id = await _resolve_item_id_for_replay(db, entry)
+                _validate_excel_replay(prior, department_id=dept["id"],
+                                       item_id=expected_item_id, new_balance=entry["balance"])
+                skipped += 1
+                continue
+
+            # Run inside a MongoDB transaction
+            async def _row_callback(session, _entry=entry, _dept=dept, _idem_key=idem_key):
+                return await _process_row(
+                    db, file_bytes, user, _entry, _dept, _idem_key,
+                    session=session, audit_callback=audit_callback, fail_after=fail_after,
+                )
+            async with await client.start_session() as session:
+                try:
+                    row_result = await session.with_transaction(_row_callback)
+                except (DuplicateKeyError, ExcelCASConflict):
+                    prior = await db.stock_transactions.find_one(
+                        {"idempotency_key": idem_key, "schema_version": 2}, {"_id": 0}
+                    )
+                    if prior:
+                        expected_item_id = await _resolve_item_id_for_replay(db, entry)
+                        _validate_excel_replay(prior, department_id=dept["id"],
+                                               item_id=expected_item_id, new_balance=entry["balance"])
+                        skipped += 1
+                        continue
+                    # Baseline-race: retry once
+                    try:
+                        async with await client.start_session() as _s2:
+                            row_result = await _s2.with_transaction(_row_callback)
+                    except (DuplicateKeyError, ExcelCASConflict):
+                        prior2 = await db.stock_transactions.find_one(
+                            {"idempotency_key": idem_key, "schema_version": 2}, {"_id": 0}
+                        )
+                        if prior2:
+                            expected_item_id = await _resolve_item_id_for_replay(db, entry)
+                            _validate_excel_replay(prior2, department_id=dept["id"],
+                                                   item_id=expected_item_id, new_balance=entry["balance"])
+                            skipped += 1
+                            continue
+                        raise ExcelWriteConflict(
+                            "Write conflict on Excel import row. Please retry."
+                        )
+
+            if row_result["item_created"]:
+                created += 1
+            elif row_result["item_updated"]:
+                updated += 1
             stock_updated += 1
+        else:
+            # No stock write — item-only create/update outside a transaction
+            item_result = await _upsert_item(db, entry)
+            if item_result == "created":
+                created += 1
+            elif item_result == "updated":
+                updated += 1
+            elif item_result == "skipped":
+                skipped += 1
 
     return {
         "created_items": created,
@@ -241,4 +322,173 @@ async def commit(
         "skipped": skipped + len(plan["errors"]),
         "errors": plan["errors"],
         "manual_review_count": 0 if include_manual_review else len(plan["manual_review"]),
+        "workbook_sha256": workbook_sha,
     }
+
+
+async def _upsert_item(db: AsyncIOMotorDatabase, entry: dict, session=None) -> str:
+    """Create or update the item record. Returns 'created', 'updated', or 'skipped'."""
+    if entry["existing_id"]:
+        update_doc = {k: v for k, v in {
+            "barcode": entry["barcode"],
+            "name_en": entry["name"],
+            "name_ar": entry["name"],
+            "category": entry["category"],
+            "unit": entry["unit"],
+            "min_level": entry["min_level"],
+            "critical_threshold": entry["critical_threshold"],
+            "max_level": entry["max_level"],
+            "updated_at": _now_iso(),
+        }.items() if v not in (None, "")}
+        if update_doc:
+            await db.items.update_one({"id": entry["existing_id"]}, {"$set": update_doc}, session=session)
+            return "updated"
+        return "skipped"
+    else:
+        if not entry["internal_code"]:
+            return "skipped"
+        item_id = _new_id()
+        await db.items.insert_one({
+            "id": item_id,
+            "internal_code": entry["internal_code"],
+            "barcode": entry["barcode"],
+            "udi": None,
+            "gtin": None,
+            "name_ar": entry["name"] or entry["internal_code"],
+            "name_en": entry["name"] or entry["internal_code"],
+            "category": entry["category"] or "Other",
+            "unit": entry["unit"] or "PCS",
+            "min_level": entry["min_level"],
+            "critical_threshold": entry["critical_threshold"],
+            "max_level": entry["max_level"],
+            "reorder_qty": 0,
+            "lead_time_days": 0,
+            "alternative_item_id": None,
+            "is_life_saving": False,
+            "is_crash_cart": False,
+            "requires_expiry": False,
+            "supplier": None,
+            "is_active": True,
+            "notes": None,
+            "created_at": _now_iso(),
+            "updated_at": _now_iso(),
+        }, session=session)
+        return "created"
+
+
+async def _process_row(
+    db: AsyncIOMotorDatabase,
+    file_bytes: bytes,
+    user: dict,
+    entry: dict,
+    dept: dict,
+    idem_key: str,
+    session=None,
+    audit_callback=None,
+    fail_after=None,
+) -> dict:
+    """Process one excel row inside an optional transaction. Returns item_created/item_updated flags."""
+    # Idempotency recheck inside the transaction
+    prior = await db.stock_transactions.find_one(
+        {"idempotency_key": idem_key, "schema_version": 2}, {"_id": 0}, session=session
+    )
+    if prior:
+        expected_item_id = await _resolve_item_id_for_replay(db, entry, session=session)
+        _validate_excel_replay(prior, department_id=dept["id"],
+                               item_id=expected_item_id, new_balance=entry["balance"])
+        return {"item_created": False, "item_updated": False}
+
+    # Upsert item (create or update)
+    item_result = await _upsert_item(db, entry, session=session)
+    item_id = entry["existing_id"] or (
+        (await db.items.find_one({"internal_code": entry["internal_code"]}, {"_id": 0}, session=session) or {}).get("id")
+    )
+    if not item_id:
+        return {"item_created": False, "item_updated": False}
+
+    item_doc = await db.items.find_one({"id": item_id}, {"_id": 0}, session=session)
+    if not item_doc:
+        return {"item_created": False, "item_updated": False}
+
+    existing_stock = await db.stock_entries.find_one(
+        {"department_id": dept["id"], "item_id": item_id}, session=session
+    )
+    previous_balance = existing_stock["balance"] if existing_stock else 0
+    quantity_change = entry["balance"] - previous_balance
+    new_balance = entry["balance"]
+    status = _calc_status(new_balance, item_doc["min_level"], item_doc["critical_threshold"])
+
+    stock_id = existing_stock["id"] if existing_stock else _new_id()
+    previous_lv = existing_stock.get("ledger_version", 0) if existing_stock else 0
+
+    if existing_stock is None:
+        seq_no = 1
+    elif previous_lv == 0:
+        baseline_status = _calc_status(previous_balance, item_doc["min_level"], item_doc["critical_threshold"])
+        await ledger_mod.ensure_v2_baseline(
+            db,
+            department_id=dept["id"],
+            item_id=item_id,
+            entry_id=stock_id,
+            balance=previous_balance,
+            user_id=user["id"],
+            user_name=user["full_name"],
+            idempotency_key=f"baseline:{dept['id']}:{item_id}",
+            status=baseline_status,
+            source="ledger_v2_cutover",
+            session=session,
+        )
+        seq_no = 2
+    else:
+        seq_no = previous_lv + 1
+
+    stock_doc = {
+        "department_id": dept["id"],
+        "item_id": item_id,
+        "balance": new_balance,
+        "status": status,
+        "last_updated_by": user["id"],
+        "last_updated_by_name": user["full_name"],
+        "last_updated_at": _now_iso(),
+        "shortage_start": _now_iso() if status in ("zero_level", "critical_level") else None,
+        "notes": "Excel import",
+    }
+    if existing_stock:
+        filter_doc = {"id": stock_id, "balance": previous_balance}
+        if previous_lv >= 1:
+            filter_doc["ledger_version"] = previous_lv
+        else:
+            filter_doc["$or"] = [{"ledger_version": {"$exists": False}}, {"ledger_version": 0}]
+        upd = await db.stock_entries.update_one(
+            filter_doc, {"$set": {**stock_doc, "ledger_version": seq_no}}, session=session
+        )
+        if upd.matched_count != 1:
+            raise ExcelCASConflict("Concurrent modification on stock entry during Excel import: please retry.")
+    else:
+        await db.stock_entries.insert_one({"id": stock_id, **stock_doc, "ledger_version": seq_no}, session=session)
+
+    _excel_check_fail_point(fail_after, "excel_stock_update")
+
+    ledger_entry = ledger_mod.build_ledger_entry(
+        department_id=dept["id"],
+        item_id=item_id,
+        entry_type="physical_count",
+        sequence_no=seq_no,
+        previous_balance=previous_balance,
+        quantity_change=quantity_change,
+        new_balance=new_balance,
+        user_id=user["id"],
+        user_name=user["full_name"],
+        actor_type="user",
+        source="excel_import",
+        idempotency_key=idem_key,
+        status=status,
+        entry_id=stock_id,
+    )
+    await ledger_mod.insert_ledger_entry(db, ledger_entry, session=session)
+
+    if audit_callback:
+        await audit_callback(session=session, item_id=item_id, dept_id=dept["id"],
+                             entry=ledger_entry)
+
+    return {"item_created": item_result == "created", "item_updated": item_result == "updated"}
