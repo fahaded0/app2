@@ -4,6 +4,7 @@ from pathlib import Path
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
 
+import asyncio
 import os
 import logging
 from datetime import datetime, timezone, timedelta
@@ -1287,10 +1288,25 @@ async def upsert_item_threshold(
 # ===== Stock Balance Reconciliation =====
 @api.post("/admin/reconcile-stock")
 async def admin_reconcile_stock(
+    request: Request,
     user: dict = Depends(require_roles("super_admin", "digital_health_manager")),
 ):
     """Trigger an on-demand reconciliation run and return discrepancies."""
     discrepancies = await scheduler_mod.reconcile_stock_balances(db)
+    discrepancy_kinds = sorted({
+        str(d.get("kind")) if d.get("kind") else "unknown"
+        for d in discrepancies
+    })
+    await write_audit(
+        user, "reconcile_stock", "reconciliation_log",
+        entity_id=None,
+        old_value=None,
+        new_value={
+            "discrepancy_count": len(discrepancies),
+            "discrepancy_kinds": discrepancy_kinds,
+        },
+        request=request,
+    )
     return {"checked_at": _now_iso(), "count": len(discrepancies), "discrepancies": discrepancies}
 
 
@@ -2555,6 +2571,21 @@ async def startup():
 @app.on_event("shutdown")
 async def shutdown():
     global client, db
+
+    for task_attr in ("scheduler_task", "reconcile_task"):
+        task = getattr(app.state, task_attr, None)
+        if task is None:
+            continue
+        if not task.done():
+            task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.exception("Background task %s failed during shutdown.", task_attr)
+        setattr(app.state, task_attr, None)
+
     if client is not None:
         client.close()
         client = None
