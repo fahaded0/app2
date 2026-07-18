@@ -284,6 +284,7 @@ AlertType = Literal[
     "below_minimum_issue",
     "below_critical_issue",
     "emergency_override",
+    "data_quality",
 ]
 
 class AlertEvent(BaseModel):
