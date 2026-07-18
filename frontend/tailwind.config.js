@@ -8,10 +8,10 @@ module.exports = {
     theme: {
         extend: {
             fontFamily: {
-                heading: ['Inter', 'system-ui', 'sans-serif'],
-                body: ['Inter', 'system-ui', 'sans-serif'],
-                sans: ['Inter', 'system-ui', 'sans-serif'],
-                mono: ['"JetBrains Mono"', 'monospace'],
+                heading: ['ui-sans-serif', 'system-ui', '-apple-system', 'BlinkMacSystemFont', '"Segoe UI"', 'sans-serif'],
+                body: ['ui-sans-serif', 'system-ui', '-apple-system', 'BlinkMacSystemFont', '"Segoe UI"', 'sans-serif'],
+                sans: ['ui-sans-serif', 'system-ui', '-apple-system', 'BlinkMacSystemFont', '"Segoe UI"', 'sans-serif'],
+                mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', '"Liberation Mono"', '"Courier New"', 'monospace'],
             },
             borderRadius: {
                 lg: 'var(--radius)',

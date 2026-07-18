@@ -60,8 +60,19 @@ export default function Items() {
         api.get("/items", { params }).then((r) => setItems(r.data));
     }
 
-    useEffect(() => { load(); /* eslint-disable-next-line */ }, [categoryFilter]);
-    useEffect(() => { const t = setTimeout(load, 400); return () => clearTimeout(t); /* eslint-disable-next-line */ }, [search]);
+    // Category changes reload immediately; search changes are handled by the
+    // separate debounced effect below.
+    useEffect(() => {
+        load();
+    }, [categoryFilter]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    // Search changes are intentionally debounced; category changes are handled
+    // by the immediate effect above.
+    useEffect(() => {
+        const timer = setTimeout(load, 400);
+        return () => clearTimeout(timer);
+    }, [search]); // eslint-disable-line react-hooks/exhaustive-deps
+
     useEffect(() => {
         if (canEditThresholds) api.get("/departments").then((r) => setDepartments(r.data));
     }, [canEditThresholds]);
