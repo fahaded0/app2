@@ -8,11 +8,65 @@ Tested with Python 3.11.15. Use Python 3.11.x for the verified local setup. Othe
 
 | File | Purpose |
 |---|---|
-| `backend/requirements.txt` | Emergent runtime image manifest — may contain private packages (`litellm`, `emergentintegrations`) or pre-installed system packages not available on PyPI. **Do not use this for local development.** |
-| `backend/requirements.app.txt` | Direct runtime dependency manifest. Lists only packages directly imported by backend production source. Transitive dependencies are resolved by pip at install time. Use for local development. |
-| `backend/requirements-dev.txt` | Extends `requirements.app.txt` with `pytest` and `requests` (used by integration tests). Use for local testing. |
+| `backend/requirements.txt` | Emergent runtime image manifest — may contain private packages (`litellm`, `emergentintegrations`) or pre-installed system packages not available on PyPI. **Do not use this for local development or for any Docker build.** |
+| `backend/requirements.app.txt` | Direct runtime dependency manifest. Lists only packages directly imported by backend production source. Transitive dependencies are resolved by pip at install time. This is the **authoritative input** used to generate `requirements.lock.txt`. Use for local development. |
+| `backend/requirements-dev.txt` | Extends `requirements.app.txt` with `pytest` and `requests` (used by integration tests). Remains the test/development manifest — unaffected by the lock file below. |
+| `backend/requirements.lock.txt` | **Reproducible production build manifest.** Every direct dependency from `requirements.app.txt` plus every resolved transitive dependency, pinned to an exact version with `sha256` hashes for every distribution PyPI publishes for that version. Installable with `pip install --require-hashes -r backend/requirements.lock.txt`. This is the file a production Dockerfile must install from — never `requirements.txt`, and never `requirements.app.txt` directly (it has no hashes and no transitive pins). |
 
-Neither `requirements.app.txt` nor `requirements-dev.txt` is a lock file — pip resolves transitive dependencies at install time. A pinned lock file (`requirements.lock.txt`) will be added in a future package.
+`requirements.app.txt` and `requirements-dev.txt` are not lock files: pip resolves transitive dependencies at install time, so two installs at different points in time can silently resolve different transitive versions. `requirements.lock.txt` removes that non-determinism for production builds.
+
+### Production dependency lock file (`backend/requirements.lock.txt`)
+
+**How it was generated** (record kept here for reproducibility and audit purposes):
+
+| Item | Value |
+|---|---|
+| Python version | 3.11.15 |
+| pip version | 26.1.2 (upgraded from the venv's bundled 24.0 before compiling) |
+| Lock-generation tool | `pip-tools` (`pip-compile`) 7.6.0 |
+| Operating system / environment | Linux x86_64, isolated Python 3.11 virtual environment (`python3.11 -m venv`) created specifically for lock generation — no other project dependencies pre-installed |
+| Input file | `backend/requirements.app.txt` (never `backend/requirements.txt`) |
+| Network access used | Yes — PyPI (`pypi.org`, `files.pythonhosted.org`) to resolve the dependency graph and fetch package hashes |
+
+**Exact command used to generate the file:**
+
+```bash
+python3.11 -m venv /tmp/lock-env
+source /tmp/lock-env/bin/activate
+python -m pip install --upgrade pip
+python -m pip install pip-tools          # installs pip-tools 7.6.0
+cd backend
+python -m piptools compile \
+    --generate-hashes \
+    --allow-unsafe \
+    --strip-extras \
+    --output-file=requirements.lock.txt \
+    requirements.app.txt
+deactivate
+```
+
+`--generate-hashes` is what makes `--require-hashes` installs possible. `--allow-unsafe` ensures any dependency pip-tools would otherwise omit from hash-pinning (none were triggered for this dependency set, but the flag is kept for future regenerations). `--strip-extras` matches current pip-tools guidance (bare extras in pinned output are deprecated). No package version or hash in `requirements.lock.txt` was hand-written or guessed — every line is `pip-compile`'s own resolved output against live PyPI metadata.
+
+### Verifying the lock file
+
+```bash
+python3.11 -m venv /tmp/verify-env
+source /tmp/verify-env/bin/activate
+python -m pip install --upgrade pip
+python -m pip install --require-hashes -r backend/requirements.lock.txt
+python -m pip check
+deactivate
+```
+
+Both commands must succeed with no errors: `pip install --require-hashes` fails closed on any missing or mismatched hash, and `pip check` confirms no installed package has an unmet or conflicting requirement.
+
+### Regenerating the lock file after a reviewed dependency change
+
+1. Change `backend/requirements.app.txt` first (add/remove/bump a **direct** dependency) as its own reviewed change.
+2. Re-run the exact generation command above against the updated `requirements.app.txt`.
+3. Re-run the verification commands above against the new `requirements.lock.txt`.
+4. Run `python -m compileall backend -q` and the backend test suite (`python3 -m pytest backend/tests/ -m "not integration" -q`, plus the Docker integration suite) before committing.
+5. Never hand-edit `requirements.lock.txt`, and never carry forward a stale hash after bumping a version in `requirements.app.txt` — always regenerate the whole file from scratch so pip-compile's own dependency resolution (not manual editing) produces every pin and hash.
 
 ## Backend local setup
 
