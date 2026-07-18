@@ -1,0 +1,41 @@
+# Docker build context excludes for the backend production image.
+# requirements.lock.txt and all *.py runtime modules are intentionally
+# NOT excluded here — they are required by the image build.
+
+.env
+.env.*
+
+tests/
+
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+*.log
+
+.git
+.git/
+.gitignore
+.gitattributes
+.gitconfig
+
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Development-only dependency manifests — the production image installs
+# exclusively from requirements.lock.txt.
+requirements.txt
+requirements-dev.txt
+requirements.app.txt
