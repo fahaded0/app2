@@ -5,7 +5,7 @@ import { formatApiError } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Stethoscope, Lock, Mail } from "lucide-react";
+import { Stethoscope, Lock, Mail, Activity, HeartPulse, ShieldCheck, ClipboardList } from "lucide-react";
 
 export default function Login() {
     const { user, login } = useAuth();
@@ -33,23 +33,37 @@ export default function Login() {
 
     return (
         <div className="min-h-screen flex bg-slate-50">
-            {/* Left side - image panel */}
-            <div className="hidden lg:block w-1/2 relative overflow-hidden">
-                <img
-                    src="https://customer-assets.emergentagent.com/job_reverent-galois-8/artifacts/ii1jbr7e_unnamed.jpg"
-                    alt="Makkah Health Cluster"
-                    className="absolute inset-0 w-full h-full object-cover"
+            {/* Left side - decorative panel (no external image; CSS gradients + icons only) */}
+            <div className="hidden lg:block w-1/2 relative overflow-hidden bg-gradient-to-br from-slate-900 via-sky-900 to-slate-900">
+                <div
+                    className="absolute inset-0 opacity-[0.07]"
+                    style={{
+                        backgroundImage:
+                            "radial-gradient(circle, rgba(255,255,255,0.9) 1px, transparent 1px)",
+                        backgroundSize: "28px 28px",
+                    }}
                 />
-                <div className="absolute inset-0 bg-gradient-to-b from-slate-900/50 to-sky-900/70" />
-                <div className="absolute inset-0 flex flex-col justify-end p-10 text-white">
-                    <h2 className="font-heading text-3xl font-black leading-tight mb-3">
-                        From spreadsheet to real-time operational system
-                    </h2>
-                    <p className="text-sm text-slate-100/90 leading-relaxed max-w-md">
-                        Track zero-stock, critical-stock, and backorder items across every
-                        department with automated alerts, escalation, and a full audit trail to
-                        protect patient safety.
-                    </p>
+                <div className="absolute -top-24 -right-16 w-96 h-96 rounded-full bg-sky-500/20 blur-3xl" />
+                <div className="absolute -bottom-32 -left-20 w-96 h-96 rounded-full bg-emerald-500/10 blur-3xl" />
+
+                <div className="absolute inset-0 flex flex-col justify-between p-10">
+                    <div className="flex items-center gap-4 text-white/70">
+                        <HeartPulse className="w-7 h-7" />
+                        <Activity className="w-7 h-7" />
+                        <ShieldCheck className="w-7 h-7" />
+                        <ClipboardList className="w-7 h-7" />
+                    </div>
+
+                    <div className="text-white">
+                        <h2 className="font-heading text-3xl font-black leading-tight mb-3">
+                            From spreadsheet to real-time operational system
+                        </h2>
+                        <p className="text-sm text-slate-100/90 leading-relaxed max-w-md">
+                            Track zero-stock, critical-stock, and backorder items across every
+                            department with automated alerts, escalation, and a full audit trail to
+                            protect patient safety.
+                        </p>
+                    </div>
                 </div>
             </div>
 
