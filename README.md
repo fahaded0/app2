@@ -67,11 +67,42 @@ printf 'REACT_APP_BACKEND_URL=http://localhost:8000\n' > frontend/.env
 
 | File | Purpose |
 |---|---|
-| `backend/requirements.txt` | Emergent runtime image manifest. May contain private packages (`litellm`, `emergentintegrations`) not available on PyPI. **Not for local development.** |
-| `backend/requirements.app.txt` | Direct runtime dependency manifest. Lists only packages directly imported by backend production source. Transitive dependencies are resolved by pip at install time. Use for local development. |
+| `backend/requirements.txt` | Emergent runtime image manifest. May contain private packages (`litellm`, `emergentintegrations`) not available on PyPI. **Never use for local development or Docker builds.** |
+| `backend/requirements.app.txt` | Direct runtime dependency manifest. Lists only packages directly imported by backend production source. Transitive dependencies are resolved by pip at install time. Authoritative input for `requirements.lock.txt`. Use for local development. |
 | `backend/requirements-dev.txt` | Extends `requirements.app.txt` with `pytest` and `requests` (used by integration tests). Use for local testing. |
+| `backend/requirements.lock.txt` | **Reproducible production build manifest.** Hash-locked (`--require-hashes`-compatible) output of every direct and transitive dependency resolved from `requirements.app.txt`. Use this file — not `requirements.app.txt` — for building production container images. |
 
-Neither `requirements.app.txt` nor `requirements-dev.txt` is a lock file — pip resolves transitive dependencies at install time. A pinned lock file (`requirements.lock.txt`) will be added in a future package.
+`requirements.app.txt` and `requirements-dev.txt` are not lock files — pip resolves transitive dependencies at install time, so two installs at different times can silently pull different transitive versions. `requirements.lock.txt` closes that gap: it pins every package (direct and transitive) to an exact version with cryptographic hashes, so production dependency resolution is repeatable and integrity-checked.
+
+### Verifying the lock file
+
+```bash
+python3.11 -m venv /tmp/verify-env
+source /tmp/verify-env/bin/activate
+python -m pip install --upgrade pip
+python -m pip install --require-hashes -r backend/requirements.lock.txt
+python -m pip check
+deactivate
+```
+
+`pip install --require-hashes` fails closed if any package's hash doesn't match what's on PyPI, or if any dependency is missing a hash — this is what makes the lock file safe to trust in a production build.
+
+### Regenerating the lock file
+
+Only regenerate after a **reviewed** change to `backend/requirements.app.txt` (a new direct dependency, or a version bump). Never hand-edit `requirements.lock.txt` or invent versions/hashes.
+
+```bash
+python3.11 -m venv /tmp/lock-env
+source /tmp/lock-env/bin/activate
+python -m pip install --upgrade pip
+python -m pip install pip-tools
+cd backend
+python -m piptools compile --generate-hashes --allow-unsafe --strip-extras \
+    --output-file=requirements.lock.txt requirements.app.txt
+deactivate
+```
+
+Requires network access to PyPI (`pypi.org` / `files.pythonhosted.org`) to resolve and hash the dependency graph. After regenerating, re-run the verification steps above and the backend test suite before committing the updated lock file.
 
 ## Running tests
 
