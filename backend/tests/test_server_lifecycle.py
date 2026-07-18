@@ -331,13 +331,16 @@ def test_normal_shutdown_sequence(srv):
     db = _make_db()
     client = _make_client(db)
 
-    with patch.object(srv, "load_runtime_config", return_value=cfg):
-        with patch.object(srv, "AsyncIOMotorClient", return_value=client):
-            _run(srv.startup())
+    async def scenario():
+        with patch.object(srv, "load_runtime_config", return_value=cfg):
+            with patch.object(srv, "AsyncIOMotorClient", return_value=client):
+                await srv.startup()
 
-    assert srv.client is client
+        assert srv.client is client
 
-    _run(srv.shutdown())
+        await srv.shutdown()
+
+    _run(scenario())
 
     client.close.assert_called_once()
     assert srv.client is None
@@ -359,6 +362,213 @@ def test_shutdown_with_none_client_does_not_call_close(srv):
     assert srv.client is None
     _run(srv.shutdown())
     fake_client.close.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# 10. Package 2A-4: shutdown cancels and awaits background tasks
+#
+# The startup() default stubs for scheduler_loop / _reconciliation_loop are
+# AsyncMocks that resolve instantly, so these tests install real coroutines
+# that hang on an unset asyncio.Event to prove actual cancellation happens.
+# ---------------------------------------------------------------------------
+def _make_hanging_loop(events: list, name: str):
+    """A background-loop stand-in that never returns until cancelled."""
+    async def _loop(db):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            events.append(f"{name}:torn_down")
+    return _loop
+
+
+async def _boom_loop(db):
+    raise RuntimeError(f"{db!r} boom")
+
+
+def test_shutdown_cancels_and_awaits_both_tasks_before_client_close(srv):
+    from runtime_config import load_runtime_config as _real_lcr
+    cfg = _real_lcr(_GOOD_ENV)
+
+    db = _make_db()
+    client = _make_client(db)
+    events = []
+    client.close = MagicMock(side_effect=lambda: events.append("client:closed"))
+
+    async def scenario():
+        with patch.object(srv, "load_runtime_config", return_value=cfg):
+            with patch.object(srv, "AsyncIOMotorClient", return_value=client):
+                with patch.object(srv.scheduler_mod, "scheduler_loop", _make_hanging_loop(events, "scheduler_task")):
+                    with patch.object(srv.scheduler_mod, "_reconciliation_loop", _make_hanging_loop(events, "reconcile_task")):
+                        await srv.startup()
+
+        scheduler_task = srv.app.state.scheduler_task
+        reconcile_task = srv.app.state.reconcile_task
+        assert isinstance(scheduler_task, asyncio.Task)
+        assert isinstance(reconcile_task, asyncio.Task)
+
+        await asyncio.sleep(0)
+        assert not scheduler_task.done()
+        assert not reconcile_task.done()
+
+        await srv.shutdown()
+
+        assert scheduler_task.cancelled()
+        assert reconcile_task.cancelled()
+
+    _run(scenario())
+
+    # Both background tasks must be fully torn down before the client closes.
+    # Relative order between the two tasks' teardown is not required — only
+    # that client:closed is last.
+    assert events[-1] == "client:closed"
+    assert set(events[:-1]) == {"scheduler_task:torn_down", "reconcile_task:torn_down"}
+    client.close.assert_called_once()
+    assert srv.app.state.scheduler_task is None
+    assert srv.app.state.reconcile_task is None
+    assert srv.client is None
+    assert srv.db is None
+    assert srv.app.state.db is None
+
+
+def test_shutdown_cancelled_error_does_not_escape(srv):
+    from runtime_config import load_runtime_config as _real_lcr
+    cfg = _real_lcr(_GOOD_ENV)
+
+    db = _make_db()
+    client = _make_client(db)
+    events = []
+
+    async def scenario():
+        with patch.object(srv, "load_runtime_config", return_value=cfg):
+            with patch.object(srv, "AsyncIOMotorClient", return_value=client):
+                with patch.object(srv.scheduler_mod, "scheduler_loop", _make_hanging_loop(events, "scheduler_task")):
+                    with patch.object(srv.scheduler_mod, "_reconciliation_loop", _make_hanging_loop(events, "reconcile_task")):
+                        await srv.startup()
+
+        # Must not raise asyncio.CancelledError (or anything else) to the caller.
+        await srv.shutdown()
+
+    _run(scenario())  # must not raise
+    client.close.assert_called_once()
+
+
+def test_shutdown_logs_non_cancellation_exception_and_still_closes_client(srv, caplog):
+    from runtime_config import load_runtime_config as _real_lcr
+    cfg = _real_lcr(_GOOD_ENV)
+
+    db = _make_db()
+    client = _make_client(db)
+
+    async def scenario():
+        with patch.object(srv, "load_runtime_config", return_value=cfg):
+            with patch.object(srv, "AsyncIOMotorClient", return_value=client):
+                await srv.startup()
+
+        # Replace scheduler_task with one already *done* with a real exception.
+        bad_task = asyncio.create_task(_boom_loop(db))
+        await asyncio.sleep(0)  # let it run to completion
+        assert bad_task.done()
+        srv.app.state.scheduler_task = bad_task
+
+        with caplog.at_level(logging.ERROR):
+            await srv.shutdown()  # must not raise
+
+    _run(scenario())
+
+    assert any("scheduler_task" in m for m in caplog.messages)
+    client.close.assert_called_once()
+    assert srv.app.state.scheduler_task is None
+    assert srv.app.state.reconcile_task is None
+
+
+def test_shutdown_one_task_failure_does_not_block_the_other(srv):
+    from runtime_config import load_runtime_config as _real_lcr
+    cfg = _real_lcr(_GOOD_ENV)
+
+    db = _make_db()
+    client = _make_client(db)
+    events = []
+
+    async def scenario():
+        with patch.object(srv, "load_runtime_config", return_value=cfg):
+            with patch.object(srv, "AsyncIOMotorClient", return_value=client):
+                with patch.object(srv.scheduler_mod, "_reconciliation_loop", _make_hanging_loop(events, "reconcile_task")):
+                    await srv.startup()
+
+        bad_task = asyncio.create_task(_boom_loop(db))
+        await asyncio.sleep(0)
+        assert bad_task.done()
+        srv.app.state.scheduler_task = bad_task
+        reconcile_task = srv.app.state.reconcile_task
+
+        await srv.shutdown()  # must not raise despite scheduler_task's failure
+
+        assert reconcile_task.cancelled()
+
+    _run(scenario())
+
+    assert "reconcile_task:torn_down" in events
+    client.close.assert_called_once()
+    assert srv.app.state.scheduler_task is None
+    assert srv.app.state.reconcile_task is None
+
+
+def test_shutdown_missing_task_attributes_does_not_raise(srv):
+    assert not hasattr(srv.app.state, "scheduler_task")
+    assert not hasattr(srv.app.state, "reconcile_task")
+    _run(srv.shutdown())  # must not raise
+
+
+def test_shutdown_none_task_attributes_does_not_raise(srv):
+    srv.app.state.scheduler_task = None
+    srv.app.state.reconcile_task = None
+    _run(srv.shutdown())  # must not raise
+    assert srv.app.state.scheduler_task is None
+    assert srv.app.state.reconcile_task is None
+
+
+def test_shutdown_done_successful_task_does_not_raise(srv):
+    async def _ok(db):
+        return "done"
+
+    async def scenario():
+        task = asyncio.create_task(_ok(None))
+        await asyncio.sleep(0)
+        assert task.done()
+        srv.app.state.scheduler_task = task
+        srv.app.state.reconcile_task = None
+        await srv.shutdown()  # must not raise
+
+    _run(scenario())
+    assert srv.app.state.scheduler_task is None
+
+
+def test_shutdown_idempotent_when_called_twice(srv):
+    from runtime_config import load_runtime_config as _real_lcr
+    cfg = _real_lcr(_GOOD_ENV)
+
+    db = _make_db()
+    client = _make_client(db)
+    events = []
+
+    async def scenario():
+        with patch.object(srv, "load_runtime_config", return_value=cfg):
+            with patch.object(srv, "AsyncIOMotorClient", return_value=client):
+                with patch.object(srv.scheduler_mod, "scheduler_loop", _make_hanging_loop(events, "scheduler_task")):
+                    with patch.object(srv.scheduler_mod, "_reconciliation_loop", _make_hanging_loop(events, "reconcile_task")):
+                        await srv.startup()
+
+        await srv.shutdown()
+        await srv.shutdown()  # second call must be a safe no-op
+
+    _run(scenario())
+
+    client.close.assert_called_once()
+    assert srv.app.state.scheduler_task is None
+    assert srv.app.state.reconcile_task is None
+    assert srv.client is None
+    assert srv.db is None
+    assert srv.app.state.db is None
 
 
 # ---------------------------------------------------------------------------
