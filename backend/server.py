@@ -37,6 +37,7 @@ import excel_import
 import stock_issue
 import email_service
 import ledger as ledger_mod
+import ledger_backfill
 from models import (
     UserCreate, UserUpdate, LoginBody,
     DepartmentCreate, ItemCreate, ItemUpdate,
@@ -1300,6 +1301,28 @@ async def admin_reconciliation_log(
 ):
     docs = await db.reconciliation_log.find({}, {"_id": 0}).sort("checked_at", -1).limit(limit).to_list(limit)
     return docs
+
+
+@api.post("/admin/backfill-v2-baselines")
+async def admin_backfill_v2_baselines(
+    request: Request,
+    user: dict = Depends(require_roles("super_admin", "digital_health_manager")),
+):
+    """Backfill Ledger v2 opening baselines for legacy stock_entries (Package 2A-3)."""
+    summary = await ledger_backfill.backfill_v2_baselines(db, client)
+    await write_audit(
+        user, "backfill_v2_baselines", "stock_entries",
+        new_value={
+            "scanned": summary["scanned"],
+            "backfilled_count": summary["backfilled_count"],
+            "already_baselined_count": summary["already_baselined_count"],
+            "conflict_existing_v2_with_zero_version_count": summary["conflict_existing_v2_with_zero_version_count"],
+            "conflict_missing_stock_entry_count": summary["conflict_missing_stock_entry_count"],
+            "failed_count": summary["failed_count"],
+        },
+        request=request,
+    )
+    return summary
 
 
 # ===== Escalation Recipients =====
