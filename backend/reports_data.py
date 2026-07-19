@@ -5,7 +5,7 @@ Each provider returns a tuple of (headers, rows, meta) ready for excel/pdf build
 from datetime import datetime, timezone, timedelta
 from typing import Any
 
-from motor.motor_asyncio import AsyncIOMotorDatabase
+from pymongo.asynchronous.database import AsyncDatabase
 
 
 def _now() -> str:
@@ -23,7 +23,7 @@ def _fmt(iso: str | None) -> str:
 
 
 # ===== Stock reports =====
-async def report_zero_level(db: AsyncIOMotorDatabase, user: dict) -> tuple:
+async def report_zero_level(db: AsyncDatabase, user: dict) -> tuple:
     rows_raw = await db.stock_entries.find({"status": "zero_level"}, {"_id": 0}).to_list(2000)
     headers = ["Department", "Item Code", "Item Name", "Unit", "Balance",
                "Min", "Critical", "Life-Saving", "Shortage Since", "Last Updated"]
@@ -47,7 +47,7 @@ async def report_zero_level(db: AsyncIOMotorDatabase, user: dict) -> tuple:
     }
 
 
-async def report_critical_level(db: AsyncIOMotorDatabase, user: dict) -> tuple:
+async def report_critical_level(db: AsyncDatabase, user: dict) -> tuple:
     rows_raw = await db.stock_entries.find({"status": "critical_level"}, {"_id": 0}).to_list(2000)
     headers = ["Department", "Item Code", "Item Name", "Unit", "Balance",
                "Critical Threshold", "Min", "Life-Saving", "Shortage Since", "Last Updated"]
@@ -71,7 +71,7 @@ async def report_critical_level(db: AsyncIOMotorDatabase, user: dict) -> tuple:
     }
 
 
-async def report_life_saving(db: AsyncIOMotorDatabase, user: dict) -> tuple:
+async def report_life_saving(db: AsyncDatabase, user: dict) -> tuple:
     life_ids = [i["id"] for i in await db.items.find(
         {"is_life_saving": True}, {"_id": 0, "id": 1}
     ).to_list(500)]
@@ -100,7 +100,7 @@ async def report_life_saving(db: AsyncIOMotorDatabase, user: dict) -> tuple:
 
 
 # ===== Request reports =====
-async def report_backorder(db: AsyncIOMotorDatabase, user: dict) -> tuple:
+async def report_backorder(db: AsyncDatabase, user: dict) -> tuple:
     rows_raw = await db.stock_requests.find({"status": "backorder"}, {"_id": 0}).to_list(2000)
     now = datetime.now(timezone.utc)
     headers = ["Request #", "Department", "Item Code", "Item Name", "Requested Qty",
@@ -132,7 +132,7 @@ async def report_backorder(db: AsyncIOMotorDatabase, user: dict) -> tuple:
     }
 
 
-async def report_open_requests(db: AsyncIOMotorDatabase, user: dict) -> tuple:
+async def report_open_requests(db: AsyncDatabase, user: dict) -> tuple:
     rows_raw = await db.stock_requests.find(
         {"status": {"$in": ["pending_approval", "approved", "dispatched",
                             "partially_received", "backorder"]}},
@@ -163,7 +163,7 @@ async def report_open_requests(db: AsyncIOMotorDatabase, user: dict) -> tuple:
 
 
 # ===== Data quality report (combines no_barcode + stale + duplicate barcode) =====
-async def report_data_quality(db: AsyncIOMotorDatabase, user: dict) -> tuple:
+async def report_data_quality(db: AsyncDatabase, user: dict) -> tuple:
     headers = ["Issue", "Entity", "Identifier", "Detail"]
     rows = []
     # No barcode
@@ -177,7 +177,8 @@ async def report_data_quality(db: AsyncIOMotorDatabase, user: dict) -> tuple:
         {"$group": {"_id": "$barcode", "n": {"$sum": 1}, "items": {"$push": "$internal_code"}}},
         {"$match": {"n": {"$gt": 1}}},
     ]
-    async for d in db.items.aggregate(pipeline):
+    duplicate_cursor = await db.items.aggregate(pipeline)
+    async for d in duplicate_cursor:
         rows.append(["Duplicate Barcode", "Item",
                      d["_id"], f"shared by: {', '.join(d['items'])}"])
     # Stale stock (>24h)
@@ -200,7 +201,7 @@ async def report_data_quality(db: AsyncIOMotorDatabase, user: dict) -> tuple:
 
 
 # ===== Item movement =====
-async def report_item_movement(db: AsyncIOMotorDatabase, user: dict, item_id: str | None = None) -> tuple:
+async def report_item_movement(db: AsyncDatabase, user: dict, item_id: str | None = None) -> tuple:
     q: dict = {}
     if item_id:
         q["item_id"] = item_id
@@ -228,7 +229,7 @@ async def report_item_movement(db: AsyncIOMotorDatabase, user: dict, item_id: st
 
 
 # ===== Department performance =====
-async def report_department_performance(db: AsyncIOMotorDatabase, user: dict) -> tuple:
+async def report_department_performance(db: AsyncDatabase, user: dict) -> tuple:
     headers = ["Department", "Code", "Items Tracked", "Zero", "Critical",
                "Stale >24h", "Open Requests", "Avg Approval (h)", "Fulfillment %"]
     departments = await db.departments.find({}, {"_id": 0}).to_list(200)
@@ -294,7 +295,7 @@ async def report_department_performance(db: AsyncIOMotorDatabase, user: dict) ->
 
 
 # ===== Monthly management overview =====
-async def report_monthly_management(db: AsyncIOMotorDatabase, user: dict) -> tuple:
+async def report_monthly_management(db: AsyncDatabase, user: dict) -> tuple:
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=30)
     period_label = f"{start.strftime('%d %b %Y')} – {end.strftime('%d %b %Y')}"
@@ -343,7 +344,7 @@ async def report_monthly_management(db: AsyncIOMotorDatabase, user: dict) -> tup
 
 
 # ===== Audit Trail =====
-async def report_audit_trail(db: AsyncIOMotorDatabase, user: dict) -> tuple:
+async def report_audit_trail(db: AsyncDatabase, user: dict) -> tuple:
     rows_raw = await db.audit_logs.find({}, {"_id": 0}).sort("created_at", -1).limit(2000).to_list(2000)
     headers = ["Timestamp", "User", "Role", "Action", "Entity", "Entity ID", "IP"]
     rows = []

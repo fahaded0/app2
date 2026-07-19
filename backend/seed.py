@@ -1,7 +1,7 @@
 """Seed initial data: admin, departments, users, item master, sample stock."""
 import os
 
-from motor.motor_asyncio import AsyncIOMotorDatabase
+from pymongo.asynchronous.database import AsyncDatabase
 
 from auth import hash_password
 from models import _new_id, _now_iso
@@ -79,7 +79,7 @@ def _calc_status(balance: int, min_level: int, critical: int) -> str:
     return "available"
 
 
-async def _ensure_admin(db: AsyncIOMotorDatabase) -> dict:
+async def _ensure_admin(db: AsyncDatabase) -> dict:
     """Ensure the admin user exists with the English full_name. Never reactivates an existing user."""
     admin_email = os.environ["ADMIN_EMAIL"]
     admin_password = os.environ["ADMIN_PASSWORD"]
@@ -105,7 +105,7 @@ async def _ensure_admin(db: AsyncIOMotorDatabase) -> dict:
     return await db.users.find_one({"email": admin_email})
 
 
-async def _ensure_departments(db: AsyncIOMotorDatabase) -> dict:
+async def _ensure_departments(db: AsyncDatabase) -> dict:
     """Ensure the seed departments exist and have English names. Returns code -> id."""
     ids: dict = {}
     for d in SAMPLE_DEPARTMENTS:
@@ -124,7 +124,7 @@ async def _ensure_departments(db: AsyncIOMotorDatabase) -> dict:
     return ids
 
 
-async def _ensure_items(db: AsyncIOMotorDatabase) -> dict:
+async def _ensure_items(db: AsyncDatabase) -> dict:
     """Ensure the seed items exist and have English names. Returns code -> id."""
     ids: dict = {}
     for it in SAMPLE_ITEMS:
@@ -164,7 +164,7 @@ async def _ensure_items(db: AsyncIOMotorDatabase) -> dict:
     return ids
 
 
-async def _ensure_users(db: AsyncIOMotorDatabase, dept_ids: dict) -> None:
+async def _ensure_users(db: AsyncDatabase, dept_ids: dict) -> None:
     """Ensure sample users exist with the English full_name."""
     for u in SAMPLE_USERS:
         dept_id = dept_ids.get(u["dept_code"]) if u["dept_code"] else None
@@ -218,7 +218,7 @@ _SAMPLE_STOCK = [
 
 
 async def _ensure_sample_stock(
-    db: AsyncIOMotorDatabase,
+    db: AsyncDatabase,
     dept_ids: dict,
     item_ids: dict,
     admin_id: str,
@@ -236,12 +236,12 @@ async def _ensure_sample_stock(
             await _seed_pair(db, _dept_id, _item_id, _balance, admin_id, admin_name,
                              _dept_code, item_ids, session=session)
 
-        async with await client.start_session() as session:
+        async with client.start_session() as session:
             await session.with_transaction(_pair_callback)
 
 
 async def _seed_pair(
-    db: AsyncIOMotorDatabase,
+    db: AsyncDatabase,
     dept_id: str,
     item_id: str,
     balance: int,
@@ -313,7 +313,7 @@ async def _seed_pair(
         }, session=session)
 
 
-async def seed(db: AsyncIOMotorDatabase, client=None) -> None:
+async def seed(db: AsyncDatabase, client=None) -> None:
     admin = await _ensure_admin(db)
     dept_ids = await _ensure_departments(db)
     item_ids = await _ensure_items(db)

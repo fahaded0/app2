@@ -141,7 +141,7 @@ def _make_db(
     v2_agg_result = [
         {"_id": {"item_id": p[0], "department_id": p[1]}} for p in v2_pairs
     ]
-    db.stock_transactions.aggregate = MagicMock(
+    db.stock_transactions.aggregate = AsyncMock(
         return_value=_AsyncIter(v2_agg_result)
     )
 

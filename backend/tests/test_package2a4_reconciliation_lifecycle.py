@@ -12,7 +12,7 @@ This file has two independent suites:
     normal imports (no sys.modules stubbing) and exercises
     ``admin_reconcile_stock`` directly with ``scheduler_mod.reconcile_stock_balances``
     and ``write_audit`` mocked via ``unittest.mock``. These require the
-    project's real runtime dependencies (fastapi, motor, pymongo, jwt,
+    project's real runtime dependencies (fastapi, pymongo, jwt,
     bcrypt, python-dotenv, pytest) to be importable — consistent with the
     rest of the repository's non-integration unit tests that import server.py
     or its collaborators directly.
@@ -307,9 +307,9 @@ def auditor_token():
 
 
 def _mongo_client():
-    # Imported lazily so module import does not require motor on a bare host.
-    from motor.motor_asyncio import AsyncIOMotorClient
-    return AsyncIOMotorClient(_MONGO_URL, serverSelectionTimeoutMS=5000)
+    # Imported lazily so module import does not require PyMongo on a bare host.
+    from pymongo import AsyncMongoClient
+    return AsyncMongoClient(_MONGO_URL, serverSelectionTimeoutMS=5000)
 
 
 async def _direct_count(collection: str, query: dict) -> int:
@@ -317,9 +317,7 @@ async def _direct_count(collection: str, query: dict) -> int:
     try:
         return await c[_MONGO_DB_NAME][collection].count_documents(query)
     finally:
-        c.close()
-
-
+        await c.close()
 async def _direct_find(collection: str, query: dict, limit: int = 100, sort=None) -> list:
     c = _mongo_client()
     try:
@@ -328,9 +326,7 @@ async def _direct_find(collection: str, query: dict, limit: int = 100, sort=None
             cursor = cursor.sort(sort)
         return await cursor.to_list(limit)
     finally:
-        c.close()
-
-
+        await c.close()
 class TestRealAuthorizedReconcileAudit:
     pytestmark = pytest.mark.integration
 

@@ -6,7 +6,7 @@ from typing import Optional
 import bcrypt
 import jwt
 from fastapi import HTTPException, Request, Depends
-from motor.motor_asyncio import AsyncIOMotorDatabase
+from pymongo.asynchronous.database import AsyncDatabase
 
 from runtime_config import load_cookie_config
 
@@ -81,7 +81,7 @@ def _extract_token(request: Request) -> Optional[str]:
 
 
 async def get_current_user(request: Request) -> dict:
-    db: AsyncIOMotorDatabase = request.app.state.db
+    db: AsyncDatabase = request.app.state.db
     token = _extract_token(request)
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated. Please sign in.")
@@ -109,7 +109,7 @@ def require_roles(*allowed_roles: str):
 
 
 # ------- Brute force lockout helpers -------
-async def check_lockout(db: AsyncIOMotorDatabase, identifier: str) -> None:
+async def check_lockout(db: AsyncDatabase, identifier: str) -> None:
     rec = await db.login_attempts.find_one({"identifier": identifier})
     if rec and rec.get("locked_until"):
         locked_until = rec["locked_until"]
@@ -122,7 +122,7 @@ async def check_lockout(db: AsyncIOMotorDatabase, identifier: str) -> None:
             raise HTTPException(status_code=429, detail=f"Account locked. Try again in {mins} minute(s).")
 
 
-async def register_failed_attempt(db: AsyncIOMotorDatabase, identifier: str) -> None:
+async def register_failed_attempt(db: AsyncDatabase, identifier: str) -> None:
     rec = await db.login_attempts.find_one({"identifier": identifier})
     attempts = (rec.get("attempts", 0) if rec else 0) + 1
     update = {"attempts": attempts, "last_attempt": datetime.now(timezone.utc).isoformat()}
@@ -132,5 +132,5 @@ async def register_failed_attempt(db: AsyncIOMotorDatabase, identifier: str) -> 
     await db.login_attempts.update_one({"identifier": identifier}, {"$set": update}, upsert=True)
 
 
-async def clear_failed_attempts(db: AsyncIOMotorDatabase, identifier: str) -> None:
+async def clear_failed_attempts(db: AsyncDatabase, identifier: str) -> None:
     await db.login_attempts.delete_one({"identifier": identifier})

@@ -11,7 +11,7 @@ used for sequential scenarios and asyncio.gather() for the true-concurrency
 scenario, consistent with the repository's existing isolated unit-test style
 (see test_package2a2_ledger_reconciliation.py).
 
-These tests require the project's real runtime dependencies (motor, pymongo,
+These tests require the project's real runtime dependencies (pymongo,
 fastapi, pydantic, python-dotenv, pytest) to be installed — e.g. inside the
 project's Docker test environment. They are not runnable in a bare host
 environment that lacks those packages.
@@ -116,7 +116,7 @@ class _FakeClient:
     def __init__(self, mongo: "_FakeMongo"):
         self.mongo = mongo
 
-    async def start_session(self):
+    def start_session(self):
         return _FakeSession(self.mongo)
 
 
@@ -800,7 +800,7 @@ class TestExistingBehaviourUnchanged:
         mongo, db, client = _setup()
 
         async def _run():
-            async with await client.start_session() as session:
+            async with client.start_session() as session:
                 async def _cb(s):
                     return await ledger_mod.ensure_v2_baseline(
                         db, department_id="d1", item_id="i1", entry_id="e1",
@@ -880,9 +880,9 @@ def auditor_token():
 
 
 def _mongo_client():
-    # Imported lazily so module import does not require motor on a bare host.
-    from motor.motor_asyncio import AsyncIOMotorClient
-    return AsyncIOMotorClient(_MONGO_URL, serverSelectionTimeoutMS=5000)
+    # Imported lazily so module import does not require PyMongo on a bare host.
+    from pymongo import AsyncMongoClient
+    return AsyncMongoClient(_MONGO_URL, serverSelectionTimeoutMS=5000)
 
 
 async def _direct_find_one(collection: str, query: dict, sort=None):
@@ -890,25 +890,19 @@ async def _direct_find_one(collection: str, query: dict, sort=None):
     try:
         return await c[_MONGO_DB_NAME][collection].find_one(query, {"_id": 0}, sort=sort)
     finally:
-        c.close()
-
-
+        await c.close()
 async def _direct_find(collection: str, query: dict, limit: int = 100) -> list:
     c = _mongo_client()
     try:
         return await c[_MONGO_DB_NAME][collection].find(query, {"_id": 0}).to_list(limit)
     finally:
-        c.close()
-
-
+        await c.close()
 async def _direct_count(collection: str, query: dict) -> int:
     c = _mongo_client()
     try:
         return await c[_MONGO_DB_NAME][collection].count_documents(query)
     finally:
-        c.close()
-
-
+        await c.close()
 async def _direct_insert_legacy_stock_entry(*, department_id: str, item_id: str, balance: int,
                                              status: str, ledger_version=None) -> str:
     """Insert a stock_entries doc directly, bypassing the API entirely.
@@ -937,7 +931,7 @@ async def _direct_insert_legacy_stock_entry(*, department_id: str, item_id: str,
     try:
         await c[_MONGO_DB_NAME].stock_entries.insert_one(doc)
     finally:
-        c.close()
+        await c.close()
     return entry_id
 
 
@@ -966,9 +960,7 @@ async def _direct_insert_v2_entry(*, department_id: str, item_id: str, entry_id:
             "created_at": "2020-01-01T00:00:00Z",
         })
     finally:
-        c.close()
-
-
+        await c.close()
 async def _direct_cleanup(*, department_id: str, item_id: str, entry_id: str) -> None:
     """Delete only the records this test created (scoped by the unique
     item_id/department_id pair and the specific stock_entry id)."""
@@ -978,9 +970,7 @@ async def _direct_cleanup(*, department_id: str, item_id: str, entry_id: str) ->
         await db.stock_entries.delete_many({"id": entry_id})
         await db.stock_transactions.delete_many({"department_id": department_id, "item_id": item_id})
     finally:
-        c.close()
-
-
+        await c.close()
 def _create_item_and_department(token: str) -> dict:
     """Create a uniquely-coded item via the live API and fetch the ER department."""
     code = f"P2A3_{_uid()[:10].upper()}"
@@ -1185,7 +1175,7 @@ class TestRealConcurrentInvocation:
 # source, is that a genuine MongoDB DuplicateKeyError raised mid-transaction
 # by the real unique index causes a real, full transaction rollback (no
 # partial baseline, no partial ledger_version bump) for the losing side. That
-# is what this test demonstrates, using two independent real Motor clients
+# is what this test demonstrates, using two independent real PyMongo Async clients
 # racing on the same stock_entry via the already-existing, unmodified
 # ledger_backfill.backfill_pair function.
 
@@ -1212,9 +1202,8 @@ class TestRealRollback:
                         ledger_backfill.backfill_pair(db_b, client_b, entry_id=entry_id),
                     )
                 finally:
-                    client_a.close()
-                    client_b.close()
-
+                    await client_a.close()
+                    await client_b.close()
             r1, r2 = asyncio.run(_run())
             outcomes = [r1["outcome"], r2["outcome"]]
             assert outcomes.count("backfilled") == 1, f"expected exactly one winner, got {outcomes}"

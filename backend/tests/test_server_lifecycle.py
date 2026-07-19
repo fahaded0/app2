@@ -70,7 +70,7 @@ def _make_db():
 def _make_client(db):
     client = MagicMock()
     client.__getitem__ = MagicMock(return_value=db)
-    client.close = MagicMock()
+    client.close = AsyncMock()
     return client
 
 
@@ -95,20 +95,30 @@ def _all_stubs():
     _bcrypt.hashpw = MagicMock(return_value=b"hash")
     _bcrypt.checkpw = MagicMock(return_value=True)
 
-    _motor = types.ModuleType("motor")
-    _motor_async = types.ModuleType("motor.motor_asyncio")
-    _motor_async.AsyncIOMotorClient = MagicMock
-    _motor_async.AsyncIOMotorDatabase = object
     _pymongo = types.ModuleType("pymongo")
+    _pymongo.__path__ = []
+    _pymongo.AsyncMongoClient = MagicMock
+
+    _pymongo_async = types.ModuleType("pymongo.asynchronous")
+    _pymongo_async.__path__ = []
+
+    _pymongo_async_database = types.ModuleType(
+        "pymongo.asynchronous.database"
+    )
+    _pymongo_async_database.AsyncDatabase = object
+
     _pymongo_errors = types.ModuleType("pymongo.errors")
     _pymongo_errors.DuplicateKeyError = Exception
+
+    _pymongo.asynchronous = _pymongo_async
+    _pymongo_async.database = _pymongo_async_database
 
     d = {
         "jwt": _jwt,
         "bcrypt": _bcrypt,
-        "motor": _motor,
-        "motor.motor_asyncio": _motor_async,
         "pymongo": _pymongo,
+        "pymongo.asynchronous": _pymongo_async,
+        "pymongo.asynchronous.database": _pymongo_async_database,
         "pymongo.errors": _pymongo_errors,
         "state_machine": types.ModuleType("state_machine"),
         "settings_store": types.ModuleType("settings_store"),
@@ -144,7 +154,7 @@ class TestImportSafety:
                 call_count += 1
 
         stubs = _all_stubs()
-        stubs["motor.motor_asyncio"].AsyncIOMotorClient = CountingClient
+        stubs["pymongo"].AsyncMongoClient = CountingClient
 
         saved = {k: sys.modules.get(k) for k in stubs}
         sys.modules.update(stubs)
@@ -153,7 +163,7 @@ class TestImportSafety:
 
         try:
             import server as srv
-            assert call_count == 0, f"AsyncIOMotorClient called {call_count}x during import"
+            assert call_count == 0, f"AsyncMongoClient called {call_count}x during import"
             assert srv.client is None
             assert srv.db is None
             print("IMPORT SAFETY: PASS")
@@ -220,7 +230,7 @@ def test_config_validated_before_client_construction(srv):
             client_constructed = True
 
     with patch.object(srv, "load_runtime_config", side_effect=ValueError("bad config")):
-        with patch.object(srv, "AsyncIOMotorClient", SpyClient):
+        with patch.object(srv, "AsyncMongoClient", SpyClient):
             with pytest.raises(ValueError, match="bad config"):
                 _run(srv.startup())
 
@@ -241,11 +251,11 @@ def test_index_failure_closes_client_once(srv):
     client = _make_client(db)
 
     with patch.object(srv, "load_runtime_config", return_value=cfg):
-        with patch.object(srv, "AsyncIOMotorClient", return_value=client):
+        with patch.object(srv, "AsyncMongoClient", return_value=client):
             with pytest.raises(RuntimeError, match="index boom"):
                 _run(srv.startup())
 
-    client.close.assert_called_once()
+    client.close.assert_awaited_once()
     assert srv.client is None
     assert srv.db is None
     assert srv.app.state.db is None
@@ -263,12 +273,12 @@ def test_seed_failure_closes_client_once(srv):
     client = _make_client(db)
 
     with patch.object(srv, "load_runtime_config", return_value=cfg):
-        with patch.object(srv, "AsyncIOMotorClient", return_value=client):
+        with patch.object(srv, "AsyncMongoClient", return_value=client):
             with patch.object(srv, "seed_data", AsyncMock(side_effect=RuntimeError("seed initialization failed"))):
                 with pytest.raises(RuntimeError, match="seed initialization failed"):
                     _run(srv.startup())
 
-    client.close.assert_called_once()
+    client.close.assert_awaited_once()
     assert srv.client is None
     assert srv.db is None
     assert srv.app.state.db is None
@@ -289,12 +299,12 @@ def test_scheduler_failure_closes_client_once(srv):
         raise RuntimeError("scheduler boom")
 
     with patch.object(srv, "load_runtime_config", return_value=cfg):
-        with patch.object(srv, "AsyncIOMotorClient", return_value=client):
+        with patch.object(srv, "AsyncMongoClient", return_value=client):
             with patch("asyncio.create_task", side_effect=boom_task):
                 with pytest.raises(RuntimeError, match="scheduler boom"):
                     _run(srv.startup())
 
-    client.close.assert_called_once()
+    client.close.assert_awaited_once()
     assert srv.client is None
     assert srv.db is None
     assert srv.app.state.db is None
@@ -312,7 +322,7 @@ def test_after_failed_startup_state_is_none(srv):
     client = _make_client(db)
 
     with patch.object(srv, "load_runtime_config", return_value=cfg):
-        with patch.object(srv, "AsyncIOMotorClient", return_value=client):
+        with patch.object(srv, "AsyncMongoClient", return_value=client):
             with pytest.raises(RuntimeError):
                 _run(srv.startup())
 
@@ -333,7 +343,7 @@ def test_normal_shutdown_sequence(srv):
 
     async def scenario():
         with patch.object(srv, "load_runtime_config", return_value=cfg):
-            with patch.object(srv, "AsyncIOMotorClient", return_value=client):
+            with patch.object(srv, "AsyncMongoClient", return_value=client):
                 await srv.startup()
 
         assert srv.client is client
@@ -342,7 +352,7 @@ def test_normal_shutdown_sequence(srv):
 
     _run(scenario())
 
-    client.close.assert_called_once()
+    client.close.assert_awaited_once()
     assert srv.client is None
     assert srv.db is None
     assert srv.app.state.db is None
@@ -392,11 +402,11 @@ def test_shutdown_cancels_and_awaits_both_tasks_before_client_close(srv):
     db = _make_db()
     client = _make_client(db)
     events = []
-    client.close = MagicMock(side_effect=lambda: events.append("client:closed"))
+    client.close = AsyncMock(side_effect=lambda: events.append("client:closed"))
 
     async def scenario():
         with patch.object(srv, "load_runtime_config", return_value=cfg):
-            with patch.object(srv, "AsyncIOMotorClient", return_value=client):
+            with patch.object(srv, "AsyncMongoClient", return_value=client):
                 with patch.object(srv.scheduler_mod, "scheduler_loop", _make_hanging_loop(events, "scheduler_task")):
                     with patch.object(srv.scheduler_mod, "_reconciliation_loop", _make_hanging_loop(events, "reconcile_task")):
                         await srv.startup()
@@ -422,7 +432,7 @@ def test_shutdown_cancels_and_awaits_both_tasks_before_client_close(srv):
     # that client:closed is last.
     assert events[-1] == "client:closed"
     assert set(events[:-1]) == {"scheduler_task:torn_down", "reconcile_task:torn_down"}
-    client.close.assert_called_once()
+    client.close.assert_awaited_once()
     assert srv.app.state.scheduler_task is None
     assert srv.app.state.reconcile_task is None
     assert srv.client is None
@@ -440,7 +450,7 @@ def test_shutdown_cancelled_error_does_not_escape(srv):
 
     async def scenario():
         with patch.object(srv, "load_runtime_config", return_value=cfg):
-            with patch.object(srv, "AsyncIOMotorClient", return_value=client):
+            with patch.object(srv, "AsyncMongoClient", return_value=client):
                 with patch.object(srv.scheduler_mod, "scheduler_loop", _make_hanging_loop(events, "scheduler_task")):
                     with patch.object(srv.scheduler_mod, "_reconciliation_loop", _make_hanging_loop(events, "reconcile_task")):
                         await srv.startup()
@@ -449,7 +459,7 @@ def test_shutdown_cancelled_error_does_not_escape(srv):
         await srv.shutdown()
 
     _run(scenario())  # must not raise
-    client.close.assert_called_once()
+    client.close.assert_awaited_once()
 
 
 def test_shutdown_logs_non_cancellation_exception_and_still_closes_client(srv, caplog):
@@ -461,7 +471,7 @@ def test_shutdown_logs_non_cancellation_exception_and_still_closes_client(srv, c
 
     async def scenario():
         with patch.object(srv, "load_runtime_config", return_value=cfg):
-            with patch.object(srv, "AsyncIOMotorClient", return_value=client):
+            with patch.object(srv, "AsyncMongoClient", return_value=client):
                 await srv.startup()
 
         # Replace scheduler_task with one already *done* with a real exception.
@@ -476,7 +486,7 @@ def test_shutdown_logs_non_cancellation_exception_and_still_closes_client(srv, c
     _run(scenario())
 
     assert any("scheduler_task" in m for m in caplog.messages)
-    client.close.assert_called_once()
+    client.close.assert_awaited_once()
     assert srv.app.state.scheduler_task is None
     assert srv.app.state.reconcile_task is None
 
@@ -491,7 +501,7 @@ def test_shutdown_one_task_failure_does_not_block_the_other(srv):
 
     async def scenario():
         with patch.object(srv, "load_runtime_config", return_value=cfg):
-            with patch.object(srv, "AsyncIOMotorClient", return_value=client):
+            with patch.object(srv, "AsyncMongoClient", return_value=client):
                 with patch.object(srv.scheduler_mod, "_reconciliation_loop", _make_hanging_loop(events, "reconcile_task")):
                     await srv.startup()
 
@@ -508,7 +518,7 @@ def test_shutdown_one_task_failure_does_not_block_the_other(srv):
     _run(scenario())
 
     assert "reconcile_task:torn_down" in events
-    client.close.assert_called_once()
+    client.close.assert_awaited_once()
     assert srv.app.state.scheduler_task is None
     assert srv.app.state.reconcile_task is None
 
@@ -553,7 +563,7 @@ def test_shutdown_idempotent_when_called_twice(srv):
 
     async def scenario():
         with patch.object(srv, "load_runtime_config", return_value=cfg):
-            with patch.object(srv, "AsyncIOMotorClient", return_value=client):
+            with patch.object(srv, "AsyncMongoClient", return_value=client):
                 with patch.object(srv.scheduler_mod, "scheduler_loop", _make_hanging_loop(events, "scheduler_task")):
                     with patch.object(srv.scheduler_mod, "_reconciliation_loop", _make_hanging_loop(events, "reconcile_task")):
                         await srv.startup()
@@ -563,7 +573,7 @@ def test_shutdown_idempotent_when_called_twice(srv):
 
     _run(scenario())
 
-    client.close.assert_called_once()
+    client.close.assert_awaited_once()
     assert srv.app.state.scheduler_task is None
     assert srv.app.state.reconcile_task is None
     assert srv.client is None
@@ -587,7 +597,7 @@ def test_startup_log_does_not_contain_secrets(srv, caplog):
 
     with caplog.at_level(logging.INFO):
         with patch.object(srv, "load_runtime_config", return_value=cfg):
-            with patch.object(srv, "AsyncIOMotorClient", return_value=client):
+            with patch.object(srv, "AsyncMongoClient", return_value=client):
                 _run(srv.startup())
 
     combined = "\n".join(caplog.messages)

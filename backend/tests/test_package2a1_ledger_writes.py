@@ -349,8 +349,8 @@ class TestUpsertStockRollback:
         assert entries == [], f"expected no ledger entries after rollback, got {entries}"
 
         async def _check():
-            from motor.motor_asyncio import AsyncIOMotorClient
-            c = AsyncIOMotorClient("mongodb://mongo:27017/?replicaSet=rs0", serverSelectionTimeoutMS=5000)
+            from pymongo import AsyncMongoClient
+            c = AsyncMongoClient("mongodb://mongo:27017/?replicaSet=rs0", serverSelectionTimeoutMS=5000)
             db = c["medstock_test"]
             try:
                 se = await db.stock_entries.find_one(
@@ -364,8 +364,7 @@ class TestUpsertStockRollback:
                 )
                 return se, alert, audit
             finally:
-                c.close()
-
+                await c.close()
         se, alert, audit = asyncio.run(_check())
         assert se is None, f"stock entry must not exist after rollback: {se}"
         assert alert is None, f"alert must not exist after rollback: {alert}"
@@ -418,8 +417,8 @@ class TestReceiveRollback:
         idem_key = _unique("RVRBK")
 
         async def _before():
-            from motor.motor_asyncio import AsyncIOMotorClient
-            c = AsyncIOMotorClient("mongodb://mongo:27017/?replicaSet=rs0", serverSelectionTimeoutMS=5000)
+            from pymongo import AsyncMongoClient
+            c = AsyncMongoClient("mongodb://mongo:27017/?replicaSet=rs0", serverSelectionTimeoutMS=5000)
             db = c["medstock_test"]
             try:
                 se = await db.stock_entries.find_one(
@@ -437,8 +436,7 @@ class TestReceiveRollback:
                 )
                 return se, req_doc, txn_count, audit_count, alert_count
             finally:
-                c.close()
-
+                await c.close()
         se_before, req_before, ledger_count_before, audit_count_before, alert_count_before = asyncio.run(_before())
 
         r = requests.post(
@@ -450,8 +448,8 @@ class TestReceiveRollback:
         assert r.status_code == 503, f"expected 503, got {r.status_code}: {r.text}"
 
         async def _after():
-            from motor.motor_asyncio import AsyncIOMotorClient
-            c = AsyncIOMotorClient("mongodb://mongo:27017/?replicaSet=rs0", serverSelectionTimeoutMS=5000)
+            from pymongo import AsyncMongoClient
+            c = AsyncMongoClient("mongodb://mongo:27017/?replicaSet=rs0", serverSelectionTimeoutMS=5000)
             db = c["medstock_test"]
             try:
                 se = await db.stock_entries.find_one(
@@ -472,8 +470,7 @@ class TestReceiveRollback:
                 )
                 return se, req_doc, txn_count, receive_entry, audit, alert_count
             finally:
-                c.close()
-
+                await c.close()
         se_after, req_after, ledger_count_after, receive_entry, audit, alert_count_after = asyncio.run(_after())
 
         bal_before = se_before["balance"] if se_before else 0
@@ -557,8 +554,8 @@ class TestReceiveRequestLedger:
 
         # Capture state after first receive (before replay)
         async def _capture_state():
-            from motor.motor_asyncio import AsyncIOMotorClient
-            c = AsyncIOMotorClient("mongodb://mongo:27017/?replicaSet=rs0", serverSelectionTimeoutMS=5000)
+            from pymongo import AsyncMongoClient
+            c = AsyncMongoClient("mongodb://mongo:27017/?replicaSet=rs0", serverSelectionTimeoutMS=5000)
             db = c["medstock_test"]
             try:
                 req_doc = await db.stock_requests.find_one({"id": req_id}, {"_id": 0})
@@ -574,8 +571,7 @@ class TestReceiveRequestLedger:
                 )
                 return req_doc, se, receive_count, audit_count
             finally:
-                c.close()
-
+                await c.close()
         req_before, se_before, receive_count_before, audit_count_before = asyncio.run(_capture_state())
 
         r2 = requests.post(f"{API}/requests/{req_id}/receive",
@@ -760,8 +756,8 @@ class TestExcelImportLedger:
         assert item is not None, f"item {code} not found after import"
 
         async def _check_audit():
-            from motor.motor_asyncio import AsyncIOMotorClient
-            c = AsyncIOMotorClient("mongodb://mongo:27017/?replicaSet=rs0", serverSelectionTimeoutMS=5000)
+            from pymongo import AsyncMongoClient
+            c = AsyncMongoClient("mongodb://mongo:27017/?replicaSet=rs0", serverSelectionTimeoutMS=5000)
             _db = c["medstock_test"]
             try:
                 log = await _db.audit_logs.find_one(
@@ -769,8 +765,7 @@ class TestExcelImportLedger:
                 )
                 return log
             finally:
-                c.close()
-
+                await c.close()
         log = asyncio.run(_check_audit())
         assert log is not None, "no audit_logs entry with action=excel_stock_import found"
         assert log.get("new_value", {}).get("department_id") == dept["id"], \
@@ -813,9 +808,9 @@ class TestSeedLedger:
         monkeypatch.setenv("ADMIN_PASSWORD", _ADMIN_PW)
 
         async def _run():
-            from motor.motor_asyncio import AsyncIOMotorClient
+            from pymongo import AsyncMongoClient
             from seed import seed as _seed
-            c = AsyncIOMotorClient("mongodb://mongo:27017/?replicaSet=rs0")
+            c = AsyncMongoClient("mongodb://mongo:27017/?replicaSet=rs0")
             try:
                 _db = c["medstock_test"]
 
@@ -856,8 +851,7 @@ class TestSeedLedger:
                 return (before_stock, before_ledger, before_alert_count,
                         after_stock, after_ledger, after_alert_count)
             finally:
-                c.close()
-
+                await c.close()
         result = asyncio.run(_run())
         assert result is not None, (
             "seed() failed to create required data: ETT-CUFF-2 item and/or ER department missing "
@@ -1083,8 +1077,8 @@ class TestStockIssueLedger:
         count_before = len(entries_before)
 
         async def _snapshot():
-            from motor.motor_asyncio import AsyncIOMotorClient
-            c = AsyncIOMotorClient("mongodb://mongo:27017/?replicaSet=rs0", serverSelectionTimeoutMS=5000)
+            from pymongo import AsyncMongoClient
+            c = AsyncMongoClient("mongodb://mongo:27017/?replicaSet=rs0", serverSelectionTimeoutMS=5000)
             db = c["medstock_test"]
             try:
                 se = await db.stock_entries.find_one(
@@ -1092,8 +1086,7 @@ class TestStockIssueLedger:
                 )
                 return se["ledger_version"] if se else None
             finally:
-                c.close()
-
+                await c.close()
         lv_before = asyncio.run(_snapshot())
 
         idem_key = _unique("TIS3K")
@@ -1121,8 +1114,8 @@ class TestStockIssueLedger:
             f"balance must still be 100 after rollback, got {matching}"
 
         async def _check_after():
-            from motor.motor_asyncio import AsyncIOMotorClient
-            c = AsyncIOMotorClient("mongodb://mongo:27017/?replicaSet=rs0", serverSelectionTimeoutMS=5000)
+            from pymongo import AsyncMongoClient
+            c = AsyncMongoClient("mongodb://mongo:27017/?replicaSet=rs0", serverSelectionTimeoutMS=5000)
             db = c["medstock_test"]
             try:
                 se = await db.stock_entries.find_one(
@@ -1137,8 +1130,7 @@ class TestStockIssueLedger:
                 )
                 return se, alert, audit
             finally:
-                c.close()
-
+                await c.close()
         se, alert, audit = asyncio.run(_check_after())
         assert se["ledger_version"] == lv_before, \
             f"ledger_version must be unchanged: before={lv_before}, after={se['ledger_version']}"
@@ -1222,8 +1214,8 @@ class TestConcurrency:
         _sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), ".."))
 
         async def _check_full():
-            from motor.motor_asyncio import AsyncIOMotorClient
-            c = AsyncIOMotorClient("mongodb://mongo:27017/?replicaSet=rs0", serverSelectionTimeoutMS=5000)
+            from pymongo import AsyncMongoClient
+            c = AsyncMongoClient("mongodb://mongo:27017/?replicaSet=rs0", serverSelectionTimeoutMS=5000)
             db = c["medstock_test"]
             try:
                 se = await db.stock_entries.find_one(
@@ -1235,8 +1227,7 @@ class TestConcurrency:
                 req_doc = await db.stock_requests.find_one({"id": req["id"]}, {"_id": 0})
                 return se, txns, req_doc
             finally:
-                c.close()
-
+                await c.close()
         se, txns, req_doc = asyncio.run(_check_full())
 
         # Exactly one receive record (plus the opening_balance from upsert_stock)
@@ -1308,9 +1299,9 @@ class TestStockIssueLegacyCutover:
 
         # 2. Insert a legacy stock_entry directly (no ledger_version field)
         async def _insert_legacy():
-            from motor.motor_asyncio import AsyncIOMotorClient
+            from pymongo import AsyncMongoClient
             import models
-            c = AsyncIOMotorClient("mongodb://mongo:27017/?replicaSet=rs0", serverSelectionTimeoutMS=5000)
+            c = AsyncMongoClient("mongodb://mongo:27017/?replicaSet=rs0", serverSelectionTimeoutMS=5000)
             _db = c["medstock_test"]
             try:
                 entry_id = models._new_id()
@@ -1328,8 +1319,7 @@ class TestStockIssueLegacyCutover:
                     # Intentionally no ledger_version — simulates legacy record
                 })
             finally:
-                c.close()
-
+                await c.close()
         asyncio.run(_insert_legacy())
 
         # 3. First issue — should create baseline seq=1 and issue seq=2
@@ -1489,8 +1479,8 @@ class TestIdempotencyPayloadConflict:
 class TestVersionInvariant:
 
     async def _get_lv_and_max_seq(self, dept_id, item_id):
-        from motor.motor_asyncio import AsyncIOMotorClient
-        c = AsyncIOMotorClient("mongodb://mongo:27017/?replicaSet=rs0", serverSelectionTimeoutMS=5000)
+        from pymongo import AsyncMongoClient
+        c = AsyncMongoClient("mongodb://mongo:27017/?replicaSet=rs0", serverSelectionTimeoutMS=5000)
         db = c["medstock_test"]
         try:
             stock = await db.stock_entries.find_one(
@@ -1503,8 +1493,7 @@ class TestVersionInvariant:
             max_seq = max(e["sequence_no"] for e in entries) if entries else 0
             return lv, max_seq
         finally:
-            c.close()
-
+            await c.close()
     def _check(self, dept_id, item_id):
         import asyncio
         return asyncio.run(self._get_lv_and_max_seq(dept_id, item_id))
@@ -1585,9 +1574,9 @@ class TestVersionInvariant:
         monkeypatch.setenv("ADMIN_PASSWORD", _ADMIN_PW)
 
         async def _ensure_seed():
-            from motor.motor_asyncio import AsyncIOMotorClient
+            from pymongo import AsyncMongoClient
             from seed import seed as _seed
-            c = AsyncIOMotorClient("mongodb://mongo:27017/?replicaSet=rs0", serverSelectionTimeoutMS=5000)
+            c = AsyncMongoClient("mongodb://mongo:27017/?replicaSet=rs0", serverSelectionTimeoutMS=5000)
             try:
                 db = c["medstock_test"]
                 await _seed(db, client=c)
@@ -1595,8 +1584,7 @@ class TestVersionInvariant:
                 items_list = await db.items.find({"internal_code": "ETT-CUFF-2"}, {"_id": 0}).to_list(1)
                 return (depts[0] if depts else None), (items_list[0] if items_list else None)
             finally:
-                c.close()
-
+                await c.close()
         er_doc, ett_doc = asyncio.run(_ensure_seed())
         assert er_doc is not None, "ER department not found after seed()"
         assert ett_doc is not None, "ETT-CUFF-2 item not found after seed()"
@@ -1632,15 +1620,15 @@ class TestReceiveQuantityValidation:
         """Return current count of receive_request audit records for req_id (entity_id field)."""
         import asyncio
         async def _count():
-            from motor.motor_asyncio import AsyncIOMotorClient
-            c = AsyncIOMotorClient("mongodb://mongo:27017/?replicaSet=rs0", serverSelectionTimeoutMS=5000)
+            from pymongo import AsyncMongoClient
+            c = AsyncMongoClient("mongodb://mongo:27017/?replicaSet=rs0", serverSelectionTimeoutMS=5000)
             db = c["medstock_test"]
             try:
                 return await db.audit_logs.count_documents(
                     {"action": "receive_request", "entity_id": req_id}
                 )
             finally:
-                c.close()
+                await c.close()
         return asyncio.run(_count())
 
     def _assert_no_mutation(self, token, item, dept, req_id, *, before_audit_count: int):
@@ -1736,14 +1724,13 @@ class TestExcelRollback:
 
         # Capture full item document before import (all Excel-modifiable fields)
         async def _capture_item():
-            from motor.motor_asyncio import AsyncIOMotorClient
-            c = AsyncIOMotorClient("mongodb://mongo:27017/?replicaSet=rs0", serverSelectionTimeoutMS=5000)
+            from pymongo import AsyncMongoClient
+            c = AsyncMongoClient("mongodb://mongo:27017/?replicaSet=rs0", serverSelectionTimeoutMS=5000)
             db = c["medstock_test"]
             try:
                 return await db.items.find_one({"id": item_id}, {"_id": 0})
             finally:
-                c.close()
-
+                await c.close()
         item_doc_before = asyncio.run(_capture_item())
         assert item_doc_before is not None, "item must exist before import"
 
@@ -1760,8 +1747,8 @@ class TestExcelRollback:
             f"expected 503 for injected rollback, got {r.status_code}: {r.text}"
 
         async def _check_all():
-            from motor.motor_asyncio import AsyncIOMotorClient
-            c = AsyncIOMotorClient("mongodb://mongo:27017/?replicaSet=rs0", serverSelectionTimeoutMS=5000)
+            from pymongo import AsyncMongoClient
+            c = AsyncMongoClient("mongodb://mongo:27017/?replicaSet=rs0", serverSelectionTimeoutMS=5000)
             db = c["medstock_test"]
             try:
                 item_doc_after = await db.items.find_one({"id": item_id}, {"_id": 0})
@@ -1787,8 +1774,7 @@ class TestExcelRollback:
                 )
                 return item_doc_after, se, physical_count, baseline, row_audit, summary_audit, alert
             finally:
-                c.close()
-
+                await c.close()
         item_doc_after, se, physical_count, baseline, row_audit, summary_audit, alert = asyncio.run(_check_all())
 
         # Item must still exist and all Excel-modifiable fields must be unchanged
@@ -1853,9 +1839,9 @@ class TestExcelItemIdentityConflict:
 
         # Plant a conflicting ledger record using item B's id but the same idem_key
         async def _plant_conflict():
-            from motor.motor_asyncio import AsyncIOMotorClient
+            from pymongo import AsyncMongoClient
             from models import _new_id, _now_iso
-            c = AsyncIOMotorClient("mongodb://mongo:27017/?replicaSet=rs0", serverSelectionTimeoutMS=5000)
+            c = AsyncMongoClient("mongodb://mongo:27017/?replicaSet=rs0", serverSelectionTimeoutMS=5000)
             db = c["medstock_test"]
             try:
                 await db.stock_transactions.insert_one({
@@ -1879,20 +1865,18 @@ class TestExcelItemIdentityConflict:
                     "created_at": _now_iso(),
                 })
             finally:
-                c.close()
-
+                await c.close()
         asyncio.run(_plant_conflict())
 
         # Capture full item A document BEFORE submitting the workbook
         async def _fetch_item_a():
-            from motor.motor_asyncio import AsyncIOMotorClient
-            c = AsyncIOMotorClient("mongodb://mongo:27017/?replicaSet=rs0", serverSelectionTimeoutMS=5000)
+            from pymongo import AsyncMongoClient
+            c = AsyncMongoClient("mongodb://mongo:27017/?replicaSet=rs0", serverSelectionTimeoutMS=5000)
             db = c["medstock_test"]
             try:
                 return await db.items.find_one({"id": item_a["id"]}, {"_id": 0})
             finally:
-                c.close()
-
+                await c.close()
         item_a_before = asyncio.run(_fetch_item_a())
         assert item_a_before is not None, "item A must exist in DB before import"
 
@@ -1908,8 +1892,8 @@ class TestExcelItemIdentityConflict:
 
         # Fetch item A again after 409 and compare all Excel-modifiable fields
         async def _verify_no_mutation():
-            from motor.motor_asyncio import AsyncIOMotorClient
-            c = AsyncIOMotorClient("mongodb://mongo:27017/?replicaSet=rs0", serverSelectionTimeoutMS=5000)
+            from pymongo import AsyncMongoClient
+            c = AsyncMongoClient("mongodb://mongo:27017/?replicaSet=rs0", serverSelectionTimeoutMS=5000)
             db = c["medstock_test"]
             try:
                 item_a_after = await db.items.find_one({"id": item_a["id"]}, {"_id": 0})
@@ -1929,8 +1913,7 @@ class TestExcelItemIdentityConflict:
                 )
                 return item_a_after, se, physical_count, row_audit, summary_audit
             finally:
-                c.close()
-
+                await c.close()
         item_a_after, se, physical_count, row_audit, summary_audit = asyncio.run(_verify_no_mutation())
 
         # Item A document must be completely unchanged
@@ -1976,8 +1959,8 @@ class TestReservedPrefixRejection:
         reserved_keys = [f"{p}{_unique()}" for p in self._PREFIXES]
 
         async def _snapshot():
-            from motor.motor_asyncio import AsyncIOMotorClient
-            c = AsyncIOMotorClient("mongodb://mongo:27017/?replicaSet=rs0", serverSelectionTimeoutMS=5000)
+            from pymongo import AsyncMongoClient
+            c = AsyncMongoClient("mongodb://mongo:27017/?replicaSet=rs0", serverSelectionTimeoutMS=5000)
             db = c["medstock_test"]
             try:
                 se = await db.stock_entries.find_one(
@@ -1995,8 +1978,7 @@ class TestReservedPrefixRejection:
                 )
                 return se, ledger_count, audit_count, alert_count
             finally:
-                c.close()
-
+                await c.close()
         se_before, ledger_count_before, audit_count_before, alert_count_before = asyncio.run(_snapshot())
 
         for idem_key in reserved_keys:
@@ -2035,8 +2017,8 @@ class TestReservedPrefixRejection:
         reserved_keys = [f"{p}{_unique()}" for p in self._PREFIXES]
 
         async def _snapshot():
-            from motor.motor_asyncio import AsyncIOMotorClient
-            c = AsyncIOMotorClient("mongodb://mongo:27017/?replicaSet=rs0", serverSelectionTimeoutMS=5000)
+            from pymongo import AsyncMongoClient
+            c = AsyncMongoClient("mongodb://mongo:27017/?replicaSet=rs0", serverSelectionTimeoutMS=5000)
             db = c["medstock_test"]
             try:
                 se = await db.stock_entries.find_one(
@@ -2054,8 +2036,7 @@ class TestReservedPrefixRejection:
                 )
                 return se, ledger_count, audit_count, alert_count
             finally:
-                c.close()
-
+                await c.close()
         se_before, ledger_count_before, audit_count_before, alert_count_before = asyncio.run(_snapshot())
 
         for idem_key in reserved_keys:
@@ -2094,8 +2075,8 @@ class TestReservedPrefixRejection:
         _dispatch_request(admin_token, req["id"], qty=30)
 
         async def _snapshot():
-            from motor.motor_asyncio import AsyncIOMotorClient
-            c = AsyncIOMotorClient("mongodb://mongo:27017/?replicaSet=rs0", serverSelectionTimeoutMS=5000)
+            from pymongo import AsyncMongoClient
+            c = AsyncMongoClient("mongodb://mongo:27017/?replicaSet=rs0", serverSelectionTimeoutMS=5000)
             db = c["medstock_test"]
             try:
                 se = await db.stock_entries.find_one(
@@ -2114,8 +2095,7 @@ class TestReservedPrefixRejection:
                 )
                 return se, req_doc, receive_count, audit_count, alert_count
             finally:
-                c.close()
-
+                await c.close()
         se_before, req_before, receive_count_before, audit_count_before, alert_count_before = asyncio.run(_snapshot())
 
         for prefix in self._PREFIXES:

@@ -8,11 +8,11 @@ import hashlib
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
-    from motor.motor_asyncio import AsyncIOMotorDatabase
+    from pymongo.asynchronous.database import AsyncDatabase
 
 try:
     from models import _new_id, _now_iso
-except ImportError:  # unit-test environment without motor/cffi
+except ImportError:  # unit-test environment without production dependencies
     import uuid, datetime as _dt
     def _new_id() -> str:
         return uuid.uuid4().hex
