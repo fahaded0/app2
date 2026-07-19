@@ -3,7 +3,7 @@ import asyncio
 import logging
 from datetime import datetime, timezone, timedelta
 
-from motor.motor_asyncio import AsyncIOMotorDatabase
+from pymongo.asynchronous.database import AsyncDatabase
 
 from settings_store import get_settings
 from models import _new_id, _now_iso
@@ -37,7 +37,7 @@ async def _escalate_alert(db, alert: dict, target_role: str, reason: str) -> Non
     logger.info("Alert %s escalated to %s (level %d)", alert["id"], target_role, new_level)
 
 
-async def _check_alert_slas(db: AsyncIOMotorDatabase, sla: dict) -> None:
+async def _check_alert_slas(db: AsyncDatabase, sla: dict) -> None:
     """Walk all unresolved alerts and escalate those past their SLA window."""
     now = datetime.now(timezone.utc)
     open_alerts = await db.alerts.find(
@@ -80,7 +80,7 @@ async def _check_alert_slas(db: AsyncIOMotorDatabase, sla: dict) -> None:
                 await _escalate_alert(db, a, "hospital_manager", "Escalation level 2 (management)")
 
 
-async def _check_stale_stock(db: AsyncIOMotorDatabase, sla: dict) -> None:
+async def _check_stale_stock(db: AsyncDatabase, sla: dict) -> None:
     """Flag stock entries not updated within the configured window (data quality)."""
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=sla["no_update_minutes"])
     cutoff_iso = cutoff.isoformat()
@@ -126,7 +126,7 @@ async def _check_stale_stock(db: AsyncIOMotorDatabase, sla: dict) -> None:
         })
 
 
-async def _check_backorder_overdue(db: AsyncIOMotorDatabase, sla: dict) -> None:
+async def _check_backorder_overdue(db: AsyncDatabase, sla: dict) -> None:
     """Open a backorder alert when a request remains backordered past the SLA."""
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=sla["backorder_escalation_minutes"])
     cutoff_iso = cutoff.isoformat()
@@ -338,7 +338,7 @@ def validate_v2_ledger_chain(entries: list[dict], stock_entry: dict | None) -> l
     return discrepancies
 
 
-async def reconcile_stock_balances(db: AsyncIOMotorDatabase) -> list[dict]:
+async def reconcile_stock_balances(db: AsyncDatabase) -> list[dict]:
     """Validate v2 ledger chains for all (item, department) pairs and log discrepancies.
 
     Only schema_version=2 stock_transactions are examined. The pair universe is
@@ -357,7 +357,8 @@ async def reconcile_stock_balances(db: AsyncIOMotorDatabase) -> list[dict]:
         }},
     ]
     pairs: set[tuple[str, str]] = set()
-    async for row in db.stock_transactions.aggregate(v2_pipeline):
+    v2_cursor = await db.stock_transactions.aggregate(v2_pipeline)
+    async for row in v2_cursor:
         pairs.add((row["_id"]["item_id"], row["_id"]["department_id"]))
 
     # Also include stock entries with ledger_version >= 1
@@ -458,7 +459,7 @@ async def reconcile_stock_balances(db: AsyncIOMotorDatabase) -> list[dict]:
     return all_discrepancies
 
 
-async def _reconciliation_loop(db: AsyncIOMotorDatabase, interval_minutes: int = 60) -> None:
+async def _reconciliation_loop(db: AsyncDatabase, interval_minutes: int = 60) -> None:
     """Independent loop for stock-balance reconciliation."""
     while True:
         try:
@@ -471,7 +472,7 @@ async def _reconciliation_loop(db: AsyncIOMotorDatabase, interval_minutes: int =
         await asyncio.sleep(interval_minutes * 60)
 
 
-async def scheduler_loop(db: AsyncIOMotorDatabase) -> None:
+async def scheduler_loop(db: AsyncDatabase) -> None:
     """Run forever, sleeping `scheduler_interval_minutes` between cycles."""
     while True:
         try:

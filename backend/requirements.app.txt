@@ -2,7 +2,7 @@
 # This is a direct-dependency manifest — only packages directly imported by
 # backend production source or explicitly required to launch the backend are listed.
 # Transitive dependencies are resolved by pip at install time.
-# A pinned lock file (requirements.lock.txt) will be added in a future package.
+# The reproducible production lock file is backend/requirements.lock.txt.
 #
 # Install this file for local development: pip install -r requirements.app.txt
 #
@@ -20,8 +20,7 @@ pydantic==2.13.4
 email-validator==2.3.0
 
 # ── Database ──────────────────────────────────────────────────────────────────
-motor==3.3.1
-pymongo==4.5.0
+pymongo==4.17.0
 
 # ── Authentication ────────────────────────────────────────────────────────────
 PyJWT==2.13.0

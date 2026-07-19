@@ -78,7 +78,7 @@ async def _resolve_item_id_for_replay(db, entry: dict, session=None) -> str:
     )
 
 from openpyxl import load_workbook
-from motor.motor_asyncio import AsyncIOMotorDatabase
+from pymongo.asynchronous.database import AsyncDatabase
 from pymongo.errors import DuplicateKeyError
 
 from models import _new_id, _now_iso
@@ -130,7 +130,7 @@ def parse_workbook(file_bytes: bytes) -> list[dict]:
     return parsed
 
 
-async def _find_match(db: AsyncIOMotorDatabase, row: dict) -> tuple[Optional[dict], str]:
+async def _find_match(db: AsyncDatabase, row: dict) -> tuple[Optional[dict], str]:
     """Return (existing_item or None, match_strategy).
     Strategies: 'barcode', 'internal_code', 'name', 'none'."""
     barcode = _norm(row.get("barcode"))
@@ -153,7 +153,7 @@ async def _find_match(db: AsyncIOMotorDatabase, row: dict) -> tuple[Optional[dic
     return None, "none"
 
 
-async def analyse(db: AsyncIOMotorDatabase, file_bytes: bytes) -> dict:
+async def analyse(db: AsyncDatabase, file_bytes: bytes) -> dict:
     """Build a preview report describing what a commit would do."""
     rows = parse_workbook(file_bytes)
     departments = {d["code"]: d for d in await db.departments.find({}, {"_id": 0}).to_list(500)}
@@ -215,7 +215,7 @@ def _calc_status(balance: int, min_level: int, critical: int) -> str:
 
 
 async def commit(
-    db: AsyncIOMotorDatabase,
+    db: AsyncDatabase,
     file_bytes: bytes,
     user: dict,
     *,
@@ -269,7 +269,7 @@ async def commit(
                     db, file_bytes, user, _entry, _dept, _idem_key,
                     session=session, audit_callback=audit_callback, fail_after=fail_after,
                 )
-            async with await client.start_session() as session:
+            async with client.start_session() as session:
                 try:
                     row_result = await session.with_transaction(_row_callback)
                 except (DuplicateKeyError, ExcelCASConflict):
@@ -284,7 +284,7 @@ async def commit(
                         continue
                     # Baseline-race: retry once
                     try:
-                        async with await client.start_session() as _s2:
+                        async with client.start_session() as _s2:
                             row_result = await _s2.with_transaction(_row_callback)
                     except (DuplicateKeyError, ExcelCASConflict):
                         prior2 = await db.stock_transactions.find_one(
@@ -326,7 +326,7 @@ async def commit(
     }
 
 
-async def _upsert_item(db: AsyncIOMotorDatabase, entry: dict, session=None) -> str:
+async def _upsert_item(db: AsyncDatabase, entry: dict, session=None) -> str:
     """Create or update the item record. Returns 'created', 'updated', or 'skipped'."""
     if entry["existing_id"]:
         update_doc = {k: v for k, v in {
@@ -377,7 +377,7 @@ async def _upsert_item(db: AsyncIOMotorDatabase, entry: dict, session=None) -> s
 
 
 async def _process_row(
-    db: AsyncIOMotorDatabase,
+    db: AsyncDatabase,
     file_bytes: bytes,
     user: dict,
     entry: dict,

@@ -13,7 +13,7 @@ from typing import Optional
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, BackgroundTasks, Header
 from fastapi.responses import StreamingResponse
 from starlette.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo import AsyncMongoClient
 from pymongo.errors import DuplicateKeyError
 import io
 import csv
@@ -56,7 +56,7 @@ from runtime_config import load_runtime_config, parse_cors_origins
 # MongoDB client and database are created during the startup lifecycle event.
 # These module-level names are reassigned in startup() so that all route
 # functions that close over `db` pick up the live connection.
-client: AsyncIOMotorClient | None = None  # type: ignore[type-arg]
+client: AsyncMongoClient | None = None  # type: ignore[type-arg]
 db = None  # type: ignore[assignment]
 
 app = FastAPI(title="Critical Medical Stock Monitoring System")
@@ -616,7 +616,7 @@ async def upsert_stock(
         return {"status": "ok", "stock_status": new_status}
 
     try:
-        async with await client.start_session() as session:
+        async with client.start_session() as session:
             result = await session.with_transaction(_txn_callback)
     except _TxnTestFailure as exc:
         logger.warning("Test-injected transaction failure: %s", exc)
@@ -635,7 +635,7 @@ async def upsert_stock(
         )
         if baseline:
             try:
-                async with await client.start_session() as _session2:
+                async with client.start_session() as _session2:
                     result = await _session2.with_transaction(_txn_callback)
                 return result
             except DuplicateKeyError:
@@ -1151,7 +1151,7 @@ async def stock_issue_execute(
 
     # ---- Execute — driver-managed retry on TransientTransactionError / UnknownCommitResult ----
     try:
-        async with await client.start_session() as session:
+        async with client.start_session() as session:
             outcome = await session.with_transaction(_txn_callback)
     except _TxnTestFailure as exc:
         logger.warning("Test-injected transaction failure: %s", exc)
@@ -1178,7 +1178,7 @@ async def stock_issue_execute(
         )
         if baseline:
             try:
-                async with await client.start_session() as _session2:
+                async with client.start_session() as _session2:
                     outcome = await _session2.with_transaction(_txn_callback)
                 result, email_payload = outcome
                 if email_payload:
@@ -1713,7 +1713,7 @@ async def receive_request(
         return {"idempotent_replay": False}
 
     try:
-        async with await client.start_session() as session:
+        async with client.start_session() as session:
             result = await session.with_transaction(_txn_callback)
     except _TxnTestFailure as exc:
         raise HTTPException(status_code=503, detail="Receive could not be completed. Please retry.")
@@ -1734,7 +1734,7 @@ async def receive_request(
         )
         if baseline:
             try:
-                async with await client.start_session() as _session2:
+                async with client.start_session() as _session2:
                     result = await _session2.with_transaction(_txn_callback)
                 if result.get("idempotent_replay"):
                     return {"status": "ok", "idempotent_replay": True}
@@ -2058,7 +2058,8 @@ async def dashboard_kpis(user: dict = Depends(get_current_user)):
         {"$sort": {"events": -1}},
         {"$limit": 5},
     ]
-    repeat_raw = await db.stock_transactions.aggregate(pipeline_repeat).to_list(10)
+    repeat_cursor = await db.stock_transactions.aggregate(pipeline_repeat)
+    repeat_raw = await repeat_cursor.to_list(10)
     top_repeated = []
     for r in repeat_raw:
         it = await db.items.find_one({"id": r["_id"]}, {"_id": 0})
@@ -2090,7 +2091,8 @@ async def dashboard_kpis(user: dict = Depends(get_current_user)):
         {"$group": {"_id": "$department_id", "count": {"$sum": 1}}},
         {"$sort": {"count": -1}}, {"$limit": 5},
     ]
-    top_dept_raw = await db.stock_entries.aggregate(pipeline).to_list(10)
+    top_dept_cursor = await db.stock_entries.aggregate(pipeline)
+    top_dept_raw = await top_dept_cursor.to_list(10)
     top_departments = []
     for r in top_dept_raw:
         d = await db.departments.find_one({"id": r["_id"]}, {"_id": 0})
@@ -2109,7 +2111,8 @@ async def dashboard_kpis(user: dict = Depends(get_current_user)):
     pipeline2 = [
         {"$group": {"_id": {"dept": "$department_id", "status": "$status"}, "count": {"$sum": 1}}},
     ]
-    raw = await db.stock_entries.aggregate(pipeline2).to_list(500)
+    dept_status_cursor = await db.stock_entries.aggregate(pipeline2)
+    raw = await dept_status_cursor.to_list(500)
     dept_status: dict = {}
     for r in raw:
         dept_id = r["_id"]["dept"]
@@ -2276,7 +2279,8 @@ async def dashboard_drill(metric: str, user: dict = Depends(get_current_user)):
         ]
         if q_stock:
             pipeline = [{"$match": q_stock}] + pipeline
-        agg = await db.stock_entries.aggregate(pipeline).to_list(20)
+        stock_summary_cursor = await db.stock_entries.aggregate(pipeline)
+        agg = await stock_summary_cursor.to_list(20)
         return {
             "metric": metric, "title": _DRILL_TITLES[metric], "kind": "summary",
             "rows": [{"status": x["_id"], "count": x["count"]} for x in agg],
@@ -2288,7 +2292,8 @@ async def dashboard_drill(metric: str, user: dict = Depends(get_current_user)):
             {"$match": {"created_at": {"$gte": cutoff}}},
             {"$group": {"_id": "$status", "count": {"$sum": 1}}},
         ]
-        agg = await db.stock_requests.aggregate(pipeline).to_list(20)
+        request_summary_cursor = await db.stock_requests.aggregate(pipeline)
+        agg = await request_summary_cursor.to_list(20)
         return {
             "metric": metric, "title": _DRILL_TITLES[metric], "kind": "summary",
             "rows": [{"status": x["_id"], "count": x["count"]} for x in agg],
@@ -2500,7 +2505,7 @@ async def startup():
     )
 
     # Create MongoDB connection using validated config values.
-    client = AsyncIOMotorClient(cfg.mongo_url)
+    client = AsyncMongoClient(cfg.mongo_url)
 
     try:
         db = client[cfg.db_name]
@@ -2561,7 +2566,7 @@ async def startup():
             task = getattr(app.state, task_attr, None)
             if task is not None and not task.done():
                 task.cancel()
-        client.close()
+        await client.close()
         client = None
         db = None
         app.state.db = None
@@ -2587,7 +2592,7 @@ async def shutdown():
         setattr(app.state, task_attr, None)
 
     if client is not None:
-        client.close()
+        await client.close()
         client = None
         db = None
         app.state.db = None

@@ -12,7 +12,7 @@ All decisions are made in the backend; the frontend is purely a viewer.
 from typing import Optional
 from datetime import datetime, timezone
 
-from motor.motor_asyncio import AsyncIOMotorDatabase
+from pymongo.asynchronous.database import AsyncDatabase
 from fastapi import HTTPException
 
 from models import _new_id, _now_iso
@@ -20,7 +20,7 @@ from models import _new_id, _now_iso
 
 # ---------- Threshold model helpers ----------
 async def ensure_threshold(
-    db: AsyncIOMotorDatabase, item_id: str, department_id: str, *, session=None
+    db: AsyncDatabase, item_id: str, department_id: str, *, session=None
 ) -> dict:
     """Return the per-department threshold, falling back to item defaults if missing."""
     th = await db.item_department_thresholds.find_one(
@@ -47,7 +47,7 @@ async def ensure_threshold(
 
 
 async def upsert_threshold(
-    db: AsyncIOMotorDatabase, *, item_id: str, department_id: str,
+    db: AsyncDatabase, *, item_id: str, department_id: str,
     minimum_level: int, critical_level: int,
     emergency_reserve_level: int, no_issue_threshold: int,
     allow_emergency_override: bool = True,
@@ -186,7 +186,7 @@ def calc_status(balance: int, threshold: dict) -> str:
 
 # ---------- Helpers ----------
 async def get_stock_balance(
-    db: AsyncIOMotorDatabase, item_id: str, department_id: str
+    db: AsyncDatabase, item_id: str, department_id: str
 ) -> dict:
     """Get current stock entry (balance) for an item+department, or zero defaults."""
     entry = await db.stock_entries.find_one(

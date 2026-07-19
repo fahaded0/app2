@@ -8,7 +8,7 @@ import logging
 from typing import Iterable, Optional
 
 import resend
-from motor.motor_asyncio import AsyncIOMotorDatabase
+from pymongo.asynchronous.database import AsyncDatabase
 
 logger = logging.getLogger("email_service")
 
@@ -198,12 +198,12 @@ async def send_report_email(
 Stored as a single document keyed by role: {"_id": "...", "role": "supply_officer", "email": "x@y.com"}
 """
 
-async def get_escalation_recipients(db: AsyncIOMotorDatabase) -> list[dict]:
+async def get_escalation_recipients(db: AsyncDatabase) -> list[dict]:
     """Return all role->email entries."""
     return await db.escalation_recipients.find({}, {"_id": 0}).to_list(100)
 
 
-async def set_escalation_recipient(db: AsyncIOMotorDatabase, role: str, email: Optional[str]) -> None:
+async def set_escalation_recipient(db: AsyncDatabase, role: str, email: Optional[str]) -> None:
     if not email:
         await db.escalation_recipients.delete_one({"role": role})
         return
@@ -214,7 +214,7 @@ async def set_escalation_recipient(db: AsyncIOMotorDatabase, role: str, email: O
     )
 
 
-async def resolve_recipients_for_roles(db: AsyncIOMotorDatabase, roles: Iterable[str]) -> list[str]:
+async def resolve_recipients_for_roles(db: AsyncDatabase, roles: Iterable[str]) -> list[str]:
     """Find emails of recipients for the given roles.
 
     Combines:

@@ -136,7 +136,7 @@ async def backfill_pair(db, client, *, entry_id: str) -> dict:
         return await _process_candidate(db, session, entry_id=entry_id)
 
     try:
-        async with await client.start_session() as session:
+        async with client.start_session() as session:
             return await session.with_transaction(_txn_callback)
     except (DuplicateKeyError, LedgerVersionConflict) as exc:
         return await _reclassify_after_abort(db, entry_id, exc)
