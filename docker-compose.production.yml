@@ -1,0 +1,213 @@
+# Docker Compose  production stack foundation.
+#
+# Production Package 3:
+# - Builds and wires the production backend and frontend images.
+# - Publishes only the frontend Nginx reverse-proxy endpoint on host loopback.
+# - Never publishes the backend or MongoDB ports.
+# - Isolates MongoDB on an internal data network.
+# - Enforces exactly one backend replica because the application starts
+#   in-process scheduler and reconciliation loops without leader election.
+# - Applies bounded json-file logging to every service.
+#
+# IMPORTANT:
+# MongoDB authentication, the scoped application database user, replica-set
+# keyfile, and final persistence hardening are implemented by Package 4.
+# Until Package 4 is merged and validated, use this stack only for disposable
+# production-configuration trials and never for populated production data.
+#
+# Usage:
+#   Copy-Item .env.production.example .env.production
+#   # Populate JWT_SECRET and review every setting.
+#   docker compose --env-file .env.production `
+#     -f docker-compose.production.yml config
+#   docker compose --env-file .env.production `
+#     -f docker-compose.production.yml up -d --build
+#
+# Package 5 will add the TLS edge reverse proxy and remove or replace the
+# temporary loopback-only frontend publication below.
+
+x-default-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "${LOG_MAX_SIZE:-10m}"
+    max-file: "${LOG_MAX_FILES:-5}"
+
+services:
+
+  mongo:
+    image: mongo:8.0@sha256:721f8fe7ae88f6acee8c163a358f726cef6dfc4181b9d3ca77212a0cef6b781c
+    command:
+      - mongod
+      - --replSet
+      - rs0
+      - --bind_ip_all
+    restart: unless-stopped
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          mongosh --quiet --eval
+          "try { db.runCommand({ ping: 1 }).ok } catch(e) { 0 }"
+          | grep -q 1
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 15s
+    logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
+
+  mongo-init:
+    image: mongo:8.0@sha256:721f8fe7ae88f6acee8c163a358f726cef6dfc4181b9d3ca77212a0cef6b781c
+    depends_on:
+      mongo:
+        condition: service_healthy
+    command:
+      - bash
+      - -ec
+      - |
+        mongosh --host mongo --quiet --eval "
+          try {
+            rs.initiate({
+              _id: 'rs0',
+              members: [
+                { _id: 0, host: 'mongo:27017' }
+              ]
+            });
+          } catch(e) {
+            if (e.codeName !== 'AlreadyInitialized') {
+              throw e;
+            }
+          }
+        "
+
+        until mongosh --host mongo --quiet --eval \
+          "db.hello().isWritablePrimary" | grep -q true
+        do
+          sleep 1
+        done
+
+        echo "rs0 PRIMARY and ready"
+    restart: "no"
+    networks:
+      - data
+    logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: "app2-backend:${APP_IMAGE_TAG:-local}"
+    restart: unless-stopped
+
+    # Exactly one backend process/container is permitted. The image also
+    # starts exactly one Uvicorn worker. Do not scale this service until a
+    # distributed lock or leader-election mechanism is implemented.
+    deploy:
+      replicas: 1
+
+    depends_on:
+      mongo-init:
+        condition: service_completed_successfully
+
+    environment:
+      APP_ENV: production
+      MONGO_URL: "${MONGO_URL:-mongodb://mongo:27017/?replicaSet=rs0}"
+      DB_NAME: "${DB_NAME:-medstock}"
+      JWT_SECRET: "${JWT_SECRET:?JWT_SECRET must be set in .env.production}"
+      COOKIE_SECURE: "${COOKIE_SECURE:-true}"
+      COOKIE_SAMESITE: "${COOKIE_SAMESITE:-lax}"
+      CORS_ALLOWED_ORIGINS: "${CORS_ALLOWED_ORIGINS:-}"
+      SEED_DATA_ENABLED: "false"
+      ADMIN_EMAIL: ""
+      ADMIN_PASSWORD: ""
+      TRANSACTION_TEST_HOOKS_ENABLED: "false"
+      RESEND_API_KEY: "${RESEND_API_KEY:-}"
+      SENDER_EMAIL: "${SENDER_EMAIL:-onboarding@resend.dev}"
+      APP_URL: "${APP_URL:-}"
+
+    networks:
+      - application
+      - data
+
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import sys, urllib.request as u;
+          r = u.urlopen('http://127.0.0.1:8000/api/', timeout=2);
+          sys.exit(0 if r.status == 200 else 1)
+      interval: 30s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+
+    stop_grace_period: 30s
+    logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # Empty at build time produces same-origin requests to /api.
+        REACT_APP_BACKEND_URL: ""
+    image: "app2-frontend:${APP_IMAGE_TAG:-local}"
+    restart: unless-stopped
+
+    depends_on:
+      backend:
+        condition: service_healthy
+
+    # Temporary Package 3 ingress. Loopback binding prevents access through
+    # the Docker host's external interfaces. Package 5 replaces this with
+    # the TLS reverse-proxy service and publishes HTTPS only.
+    ports:
+      - "${APP_BIND_ADDRESS:-127.0.0.1}:${APP_HTTP_PORT:-8080}:8080"
+
+    networks:
+      - application
+
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - -q
+        - --spider
+        - http://127.0.0.1:8080/healthz
+      interval: 30s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+    stop_grace_period: 15s
+    logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+
+  # Frontend-to-backend application traffic. No backend host port exists.
+  application:
+    driver: bridge
+
+  # Backend-to-MongoDB traffic only. The internal flag prevents this network
+  # from providing external connectivity and MongoDB has no published port.
+  data:
+    driver: bridge
+    internal: true
+
+volumes:
+
+  # Package 4 finalizes the authenticated replica-set and persistence design.
+  mongo_data:
