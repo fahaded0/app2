@@ -15,7 +15,7 @@
 # ---------------------------------------------------------------------------
 # Builder stage
 # ---------------------------------------------------------------------------
-FROM node:24-alpine AS builder
+FROM node:24-alpine@sha256:4ba75f835bb8802193e4c114572113d4b26f95f6f094f4b5229d2a77773e0afc AS builder
 
 # node:24-alpine already bundles Yarn Classic 1.22.22 — assert that exact
 # version rather than reinstalling it, so the build fails loudly if a future
@@ -47,8 +47,8 @@ RUN CI=true GENERATE_SOURCEMAP=false yarn build
 # via the Docker Hub API (this build sandbox blocks registry image pulls;
 # see the accompanying report) that the exact tag 1.30.4-alpine exists,
 # resolving to digest
-# sha256:dcea25a6593307a74b09e59a47f8695c4d56943750e45add532ae0bf8b24bfd6.
-FROM nginxinc/nginx-unprivileged:1.30.4-alpine AS runtime
+# sha256:dcb6a40a82e08e071f696805a23b45d5bb6582a7508509930d3035b16b441069.
+FROM nginxinc/nginx-unprivileged:1.30.4-alpine@sha256:dcb6a40a82e08e071f696805a23b45d5bb6582a7508509930d3035b16b441069 AS runtime
 
 # The base image's own default web content lives under
 # /usr/share/nginx/html, which — unlike its pid/cache/temp paths — is not
