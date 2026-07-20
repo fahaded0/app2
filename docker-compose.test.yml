@@ -10,7 +10,7 @@
 services:
 
   mongo:
-    image: mongo:8.0
+    image: mongo:8.0@sha256:721f8fe7ae88f6acee8c163a358f726cef6dfc4181b9d3ca77212a0cef6b781c
     command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
     volumes:
       - mongo_test_data:/data/db
@@ -25,7 +25,7 @@ services:
       start_period: 10s
 
   mongo-init:
-    image: mongo:8.0
+    image: mongo:8.0@sha256:721f8fe7ae88f6acee8c163a358f726cef6dfc4181b9d3ca77212a0cef6b781c
     depends_on:
       mongo:
         condition: service_healthy
@@ -58,7 +58,7 @@ services:
       start_period: 15s
 
   backend:
-    image: python:3.11-slim
+    image: python:3.11-slim@sha256:00af38ae2ed311628970782e8a2d7f014d8909dbc63cb97bc0a158187f4db045
     working_dir: /app/backend
     volumes:
       - .:/app
@@ -92,7 +92,7 @@ services:
       start_period: 30s
 
   tests:
-    image: python:3.11-slim
+    image: python:3.11-slim@sha256:00af38ae2ed311628970782e8a2d7f014d8909dbc63cb97bc0a158187f4db045
     working_dir: /app
     volumes:
       - .:/app
