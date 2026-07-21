@@ -1,21 +1,26 @@
-# Docker Compose  authenticated production stack.
+# Docker Compose authenticated production stack.
 #
-# Production Package 4:
-# - Enables MongoDB keyfile authentication for the single-node rs0 replica set.
-# - Creates a root administration user only for initialization and maintenance.
-# - Creates or updates a dedicated application user with readWrite access only
-#   to DB_NAME.
-# - Supplies credentials through service-scoped, file-backed Compose secrets.
-# - Keeps MongoDB and backend ports unpublished.
-# - Persists /data/db and /data/configdb in explicitly named Docker volumes.
+# Production Package 5:
+# - Retains Package 4 MongoDB authentication and explicit persistence.
+# - Adds a dedicated TLS-terminating Nginx edge service.
+# - Supplies the certificate chain and private key as service-scoped secrets.
+# - Publishes only the TLS edge HTTPS endpoint.
+# - Keeps frontend, backend, and MongoDB ports unpublished.
+# - Proxies /api/ directly to backend and all other requests to frontend.
+# - Restricts the edge to TLS 1.2 and TLS 1.3.
 #
-# The single-node replica set enables multi-document transactions but provides
-# no high availability or automatic failover. That infrastructure limitation
-# requires separate documented risk acceptance before pilot deployment.
+# The single-node MongoDB replica set enables multi-document transactions but
+# provides no high availability or automatic failover. That infrastructure
+# limitation requires separate documented risk acceptance before deployment.
 #
-# Prepare local secret files:
+# Prepare the MongoDB secret files:
 #   powershell -NoProfile -ExecutionPolicy Bypass `
 #     -File .\deploy\mongo\prepare-secrets.ps1
+#
+# Place the approved PEM certificate chain and unencrypted PEM private key at
+# the paths configured by TLS_CERTIFICATE_FILE and TLS_PRIVATE_KEY_FILE.
+# Certificate issuance, hostname validation, renewal, and expiry monitoring
+# remain operational responsibilities of the internal certificate owner.
 #
 # Then:
 #   Copy-Item .env.production.example .env.production
@@ -25,13 +30,11 @@
 #   docker compose --env-file .env.production `
 #     -f docker-compose.production.yml up -d --build
 #
-# Never use prepare-secrets.ps1 -Force against a populated production volume.
-# Rotating the MongoDB root password requires an authenticated database
-# operation; replacing only the secret file does not update an existing user.
+# Never use prepare-secrets.ps1 -Force against populated production volumes.
+# Replacing a MongoDB password file does not rotate an existing database user.
 #
-# Package 5 replaces the temporary loopback HTTP ingress with the TLS edge
-# reverse proxy. Package 7 adds backup, restore, and restore-drill tooling.
-
+# No plaintext HTTP host listener is published by this stack.
+# Package 7 adds backup, restore, and restore-drill tooling.
 x-default-logging: &default-logging
   driver: json-file
   options:
@@ -53,19 +56,38 @@ services:
       - |
         set -Eeuo pipefail
 
+        root_username_source=/run/secrets/mongo_root_username
+        root_password_source=/run/secrets/mongo_root_password
         key_source=/run/secrets/mongo_replica_set_key
-        key_dir=/tmp/app2-mongo-keyfile
-        key_target="$${key_dir}/keyfile"
 
+        secret_dir=/tmp/app2-mongo-secrets
+        root_username_target="$${secret_dir}/root-username"
+        root_password_target="$${secret_dir}/root-password"
+        key_target="$${secret_dir}/replica-set-keyfile"
+
+        test -s "$$root_username_source"
+        test -s "$$root_password_source"
         test -s "$$key_source"
 
-        rm -rf "$$key_dir"
-        mkdir -p "$$key_dir"
+        rm -rf "$$secret_dir"
+        mkdir -p "$$secret_dir"
+        chmod 0700 "$$secret_dir"
+
+        cp "$$root_username_source" "$$root_username_target"
+        cp "$$root_password_source" "$$root_password_target"
         cp "$$key_source" "$$key_target"
 
-        chown -R mongodb:mongodb "$$key_dir"
-        chmod 700 "$$key_dir"
-        chmod 400 "$$key_target"
+        chmod 0400 "$$root_username_target"
+        chmod 0400 "$$root_password_target"
+        chmod 0400 "$$key_target"
+
+        chown mongodb:mongodb "$$root_username_target"
+        chown mongodb:mongodb "$$root_password_target"
+        chown mongodb:mongodb "$$key_target"
+        chown mongodb:mongodb "$$secret_dir"
+
+        export MONGO_INITDB_ROOT_USERNAME_FILE="$$root_username_target"
+        export MONGO_INITDB_ROOT_PASSWORD_FILE="$$root_password_target"
 
         exec docker-entrypoint.sh mongod \
           --replSet rs0 \
@@ -287,6 +309,11 @@ services:
       dockerfile: Dockerfile
 
     image: "app2-backend:${APP_IMAGE_TAG:-local}"
+
+    # The bootstrap starts as root only to read root-owned 0600 Compose
+    # secrets. It drops supplementary groups and switches permanently to
+    # appuser UID/GID 10001 before replacing itself with Uvicorn.
+    user: "0:0"
     restart: unless-stopped
 
     # Exactly one backend process/container is permitted. The image starts one
@@ -321,8 +348,10 @@ services:
         target: mongo_app_password
 
     # Construct the authenticated URI inside the running container instead of
-    # placing the password in Compose environment metadata. os.execvp replaces
-    # the wrapper with Uvicorn so Uvicorn remains PID 1 and receives SIGTERM.
+    # placing the password in Compose environment metadata. Root is used only
+    # to read the root-owned secret mounts. The bootstrap then clears
+    # supplementary groups, switches to UID/GID 10001, and uses os.execvp so
+    # non-root Uvicorn remains PID 1 and receives SIGTERM directly.
     command:
       - python
       - -c
@@ -330,6 +359,9 @@ services:
         import os
         from pathlib import Path
         from urllib.parse import quote
+
+        APP_UID = 10001
+        APP_GID = 10001
 
         def read_secret(path: str) -> str:
             value = Path(path).read_text(encoding="utf-8").strip()
@@ -356,6 +388,20 @@ services:
             f"mongodb://{username}:{password}@mongo:27017/{db_name}"
             f"?authSource={db_name}&replicaSet=rs0"
         )
+
+        os.setgroups([])
+        os.setgid(APP_GID)
+        os.setuid(APP_UID)
+
+        if (
+            os.getuid() != APP_UID
+            or os.geteuid() != APP_UID
+            or os.getgid() != APP_GID
+            or os.getegid() != APP_GID
+        ):
+            raise RuntimeError(
+                "Backend privilege drop to appuser failed."
+            )
 
         os.execvp(
             "python",
@@ -385,7 +431,10 @@ services:
         - python
         - -c
         - >-
-          import sys, urllib.request as u;
+          import os, sys, urllib.request as u;
+          os.setgroups([]);
+          os.setgid(10001);
+          os.setuid(10001);
           r = u.urlopen('http://127.0.0.1:8000/api/', timeout=2);
           sys.exit(0 if r.status == 200 else 1)
       interval: 30s
@@ -395,6 +444,13 @@ services:
 
     stop_grace_period: 30s
     logging: *default-logging
+
+    cap_add:
+      - SETGID
+      - SETUID
+
+    cap_drop:
+      - ALL
 
     security_opt:
       - no-new-privileges:true
@@ -413,10 +469,7 @@ services:
       backend:
         condition: service_healthy
 
-    # Temporary Package 3/4 ingress. Package 5 replaces this loopback HTTP
-    # binding with the TLS reverse-proxy service and publishes HTTPS only.
-    ports:
-      - "${APP_BIND_ADDRESS:-127.0.0.1}:${APP_HTTP_PORT:-8080}:8080"
+    # Internal application hop only. No frontend host port is published.
 
     networks:
       - application
@@ -439,6 +492,155 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  tls-edge:
+    image: nginxinc/nginx-unprivileged:1.30.4-alpine@sha256:dcb6a40a82e08e071f696805a23b45d5bb6582a7508509930d3035b16b441069
+    user: "0:0"
+    entrypoint:
+      - /bin/sh
+      - -ec
+    command:
+      - |
+        set -eu
+
+        install -d -m 0700 /tmp/app2-tls
+        install -d -m 0755 /tmp/app2-nginx
+        install -d -m 0755 /tmp/app2-nginx/conf.d
+
+        cp \
+          /run/secrets/tls_certificate \
+          /tmp/app2-tls/tls-certificate.pem
+
+        cp \
+          /run/secrets/tls_private_key \
+          /tmp/app2-tls/tls-private.key
+
+        chmod 0400 /tmp/app2-tls/tls-certificate.pem
+        chmod 0400 /tmp/app2-tls/tls-private.key
+
+        cp \
+          /etc/nginx/nginx.conf \
+          /tmp/app2-nginx/nginx.conf
+
+        cp \
+          /etc/nginx/conf.d/default.conf \
+          /tmp/app2-nginx/conf.d/default.conf
+
+        sed -i \
+          's#^[[:space:]]*error_log[[:space:]][^;]*;#error_log stderr notice;#' \
+          /tmp/app2-nginx/nginx.conf
+
+        sed -i \
+          's#^[[:space:]]*access_log[[:space:]][^;]*;#access_log /tmp/app2-nginx/access.log main;#' \
+          /tmp/app2-nginx/nginx.conf
+
+        grep -F \
+          'error_log stderr notice;' \
+          /tmp/app2-nginx/nginx.conf \
+          >/dev/null
+
+        grep -F \
+          'access_log /tmp/app2-nginx/access.log main;' \
+          /tmp/app2-nginx/nginx.conf \
+          >/dev/null
+
+        sed -i \
+          's#/run/secrets/tls_certificate#/tmp/app2-tls/tls-certificate.pem#g' \
+          /tmp/app2-nginx/conf.d/default.conf
+
+        sed -i \
+          's#/run/secrets/tls_private_key#/tmp/app2-tls/tls-private.key#g' \
+          /tmp/app2-nginx/conf.d/default.conf
+
+        sed -i \
+          's#/etc/nginx/conf.d/\*\.conf#/tmp/app2-nginx/conf.d/*.conf#g' \
+          /tmp/app2-nginx/nginx.conf
+
+        grep -F \
+          '/tmp/app2-tls/tls-certificate.pem' \
+          /tmp/app2-nginx/conf.d/default.conf \
+          >/dev/null
+
+        grep -F \
+          '/tmp/app2-tls/tls-private.key' \
+          /tmp/app2-nginx/conf.d/default.conf \
+          >/dev/null
+
+        grep -F \
+          'include /tmp/app2-nginx/conf.d/*.conf;' \
+          /tmp/app2-nginx/nginx.conf \
+          >/dev/null
+
+        chmod 0444 /tmp/app2-nginx/nginx.conf
+        chmod 0444 /tmp/app2-nginx/conf.d/default.conf
+
+        chown 101:0 /tmp/app2-tls/tls-certificate.pem
+        chown 101:0 /tmp/app2-tls/tls-private.key
+        chown 101:0 /tmp/app2-nginx/nginx.conf
+        chown 101:0 /tmp/app2-nginx/conf.d/default.conf
+
+        chown 101:0 /tmp/app2-nginx/conf.d
+        chown 101:0 /tmp/app2-nginx
+        chown 101:0 /tmp/app2-tls
+
+        exec su \
+          -s /bin/sh \
+          nginx \
+          -c 'exec nginx -c /tmp/app2-nginx/nginx.conf -g "daemon off;"'
+    restart: unless-stopped
+
+    depends_on:
+      frontend:
+        condition: service_healthy
+
+    secrets:
+      - source: tls_certificate
+        target: tls_certificate
+      - source: tls_private_key
+        target: tls_private_key
+
+    volumes:
+      - type: bind
+        source: ./deploy/tls/nginx.conf
+        target: /etc/nginx/conf.d/default.conf
+        read_only: true
+
+    ports:
+      - "${HTTPS_BIND_ADDRESS:-127.0.0.1}:${HTTPS_PORT:-443}:8443"
+
+    networks:
+      - application
+
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          wget
+          --quiet
+          --no-check-certificate
+          --spider
+          https://127.0.0.1:8443/healthz
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+    read_only: true
+
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+    cap_drop:
+      - ALL
+
+    stop_grace_period: 15s
+    logging: *default-logging
+
+    security_opt:
+      - no-new-privileges:true
 networks:
 
   application:
@@ -472,3 +674,8 @@ secrets:
 
   mongo_replica_set_key:
     file: "${MONGO_REPLICA_SET_KEY_FILE:?MONGO_REPLICA_SET_KEY_FILE must point to a secret file}"
+  tls_certificate:
+    file: "${TLS_CERTIFICATE_FILE:?TLS_CERTIFICATE_FILE must point to a PEM certificate-chain file}"
+
+  tls_private_key:
+    file: "${TLS_PRIVATE_KEY_FILE:?TLS_PRIVATE_KEY_FILE must point to an unencrypted PEM private-key file}"
