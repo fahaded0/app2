@@ -1,30 +1,36 @@
-# Docker Compose  production stack foundation.
+# Docker Compose  authenticated production stack.
 #
-# Production Package 3:
-# - Builds and wires the production backend and frontend images.
-# - Publishes only the frontend Nginx reverse-proxy endpoint on host loopback.
-# - Never publishes the backend or MongoDB ports.
-# - Isolates MongoDB on an internal data network.
-# - Enforces exactly one backend replica because the application starts
-#   in-process scheduler and reconciliation loops without leader election.
-# - Applies bounded json-file logging to every service.
+# Production Package 4:
+# - Enables MongoDB keyfile authentication for the single-node rs0 replica set.
+# - Creates a root administration user only for initialization and maintenance.
+# - Creates or updates a dedicated application user with readWrite access only
+#   to DB_NAME.
+# - Supplies credentials through service-scoped, file-backed Compose secrets.
+# - Keeps MongoDB and backend ports unpublished.
+# - Persists /data/db and /data/configdb in explicitly named Docker volumes.
 #
-# IMPORTANT:
-# MongoDB authentication, the scoped application database user, replica-set
-# keyfile, and final persistence hardening are implemented by Package 4.
-# Until Package 4 is merged and validated, use this stack only for disposable
-# production-configuration trials and never for populated production data.
+# The single-node replica set enables multi-document transactions but provides
+# no high availability or automatic failover. That infrastructure limitation
+# requires separate documented risk acceptance before pilot deployment.
 #
-# Usage:
+# Prepare local secret files:
+#   powershell -NoProfile -ExecutionPolicy Bypass `
+#     -File .\deploy\mongo\prepare-secrets.ps1
+#
+# Then:
 #   Copy-Item .env.production.example .env.production
-#   # Populate JWT_SECRET and review every setting.
+#   # Populate JWT_SECRET and review every variable.
 #   docker compose --env-file .env.production `
 #     -f docker-compose.production.yml config
 #   docker compose --env-file .env.production `
 #     -f docker-compose.production.yml up -d --build
 #
-# Package 5 will add the TLS edge reverse proxy and remove or replace the
-# temporary loopback-only frontend publication below.
+# Never use prepare-secrets.ps1 -Force against a populated production volume.
+# Rotating the MongoDB root password requires an authenticated database
+# operation; replacing only the secret file does not update an existing user.
+#
+# Package 5 replaces the temporary loopback HTTP ingress with the TLS edge
+# reverse proxy. Package 7 adds backup, restore, and restore-drill tooling.
 
 x-default-logging: &default-logging
   driver: json-file
@@ -36,66 +42,242 @@ services:
 
   mongo:
     image: mongo:8.0@sha256:721f8fe7ae88f6acee8c163a358f726cef6dfc4181b9d3ca77212a0cef6b781c
-    command:
-      - mongod
-      - --replSet
-      - rs0
-      - --bind_ip_all
+
+    # Compose file-backed secrets are normally mounted read-only with host-side
+    # ownership. MongoDB requires a private keyfile, so copy it into the
+    # container's ephemeral filesystem and enforce ownership/mode before
+    # invoking the official image entrypoint.
+    entrypoint:
+      - bash
+      - -ec
+      - |
+        set -Eeuo pipefail
+
+        key_source=/run/secrets/mongo_replica_set_key
+        key_dir=/tmp/app2-mongo-keyfile
+        key_target="$${key_dir}/keyfile"
+
+        test -s "$$key_source"
+
+        rm -rf "$$key_dir"
+        mkdir -p "$$key_dir"
+        cp "$$key_source" "$$key_target"
+
+        chown -R mongodb:mongodb "$$key_dir"
+        chmod 700 "$$key_dir"
+        chmod 400 "$$key_target"
+
+        exec docker-entrypoint.sh mongod \
+          --replSet rs0 \
+          --bind_ip_all \
+          --keyFile "$$key_target"
+
+    environment:
+      MONGO_INITDB_ROOT_USERNAME_FILE: /run/secrets/mongo_root_username
+      MONGO_INITDB_ROOT_PASSWORD_FILE: /run/secrets/mongo_root_password
+
+    secrets:
+      - source: mongo_root_username
+        target: mongo_root_username
+      - source: mongo_root_password
+        target: mongo_root_password
+      - source: mongo_replica_set_key
+        target: mongo_replica_set_key
+
     restart: unless-stopped
+
     volumes:
-      - mongo_data:/data/db
+      - type: volume
+        source: mongo_data
+        target: /data/db
+        volume:
+          nocopy: true
+
+      - type: volume
+        source: mongo_config
+        target: /data/configdb
+        volume:
+          nocopy: true
+
     networks:
       - data
+
     healthcheck:
       test:
         - CMD-SHELL
         - >-
-          mongosh --quiet --eval
-          "try { db.runCommand({ ping: 1 }).ok } catch(e) { 0 }"
+          root_user="$$(cat /run/secrets/mongo_root_username)" &&
+          root_password="$$(cat /run/secrets/mongo_root_password)" &&
+          mongosh
+          --host 127.0.0.1
+          --port 27017
+          --username "$$root_user"
+          --password "$$root_password"
+          --authenticationDatabase admin
+          --quiet
+          --eval "db.adminCommand({ ping: 1 }).ok"
           | grep -q 1
       interval: 5s
-      timeout: 5s
-      retries: 24
-      start_period: 15s
+      timeout: 10s
+      retries: 36
+      start_period: 20s
+
+    stop_grace_period: 60s
     logging: *default-logging
+
     security_opt:
       - no-new-privileges:true
 
   mongo-init:
     image: mongo:8.0@sha256:721f8fe7ae88f6acee8c163a358f726cef6dfc4181b9d3ca77212a0cef6b781c
+
     depends_on:
       mongo:
         condition: service_healthy
+
+    environment:
+      DB_NAME: "${DB_NAME:-medstock}"
+
+    secrets:
+      - source: mongo_root_username
+        target: mongo_root_username
+      - source: mongo_root_password
+        target: mongo_root_password
+      - source: mongo_app_username
+        target: mongo_app_username
+      - source: mongo_app_password
+        target: mongo_app_password
+
     command:
       - bash
       - -ec
       - |
-        mongosh --host mongo --quiet --eval "
+        set -Eeuo pipefail
+
+        root_user="$$(cat /run/secrets/mongo_root_username)"
+        root_password="$$(cat /run/secrets/mongo_root_password)"
+        app_user="$$(cat /run/secrets/mongo_app_username)"
+        app_password="$$(cat /run/secrets/mongo_app_password)"
+
+        test -n "$$root_user"
+        test -n "$$root_password"
+        test -n "$$app_user"
+        test -n "$$app_password"
+        test -n "$$DB_NAME"
+
+        export APP_DB="$$DB_NAME"
+        export APP_USER="$$app_user"
+        export APP_PASSWORD="$$app_password"
+
+        root_mongosh() {
+          mongosh \
+            --host mongo \
+            --port 27017 \
+            --username "$$root_user" \
+            --password "$$root_password" \
+            --authenticationDatabase admin \
+            --quiet \
+            "$$@"
+        }
+
+        rs_ready="$$(root_mongosh --eval '
           try {
-            rs.initiate({
-              _id: 'rs0',
-              members: [
-                { _id: 0, host: 'mongo:27017' }
-              ]
-            });
-          } catch(e) {
-            if (e.codeName !== 'AlreadyInitialized') {
-              throw e;
+            print(rs.status().ok);
+          } catch (error) {
+            if (
+              error.code === 94 ||
+              error.codeName === "NotYetInitialized"
+            ) {
+              print(0);
+            } else {
+              throw error;
             }
           }
-        "
+        ' | tail -n 1)"
 
-        until mongosh --host mongo --quiet --eval \
-          "db.hello().isWritablePrimary" | grep -q true
+        if [ "$$rs_ready" != "1" ]; then
+          root_mongosh --eval '
+            rs.initiate({
+              _id: "rs0",
+              members: [
+                { _id: 0, host: "mongo:27017" }
+              ]
+            });
+          '
+        fi
+
+        until [ "$$(root_mongosh --eval '
+          print(db.hello().isWritablePrimary);
+        ' | tail -n 1)" = "true" ]
         do
           sleep 1
         done
 
-        echo "rs0 PRIMARY and ready"
+        root_mongosh "$$APP_DB" --eval '
+          const target = db.getSiblingDB(process.env.APP_DB);
+          const user = process.env.APP_USER;
+          const password = process.env.APP_PASSWORD;
+          const roles = [
+            {
+              role: "readWrite",
+              db: process.env.APP_DB
+            }
+          ];
+
+          const existing = target.getUser(user);
+
+          if (!existing) {
+            target.createUser({
+              user,
+              pwd: password,
+              roles
+            });
+          } else {
+            target.updateUser(user, {
+              pwd: password,
+              roles
+            });
+          }
+        '
+
+        mongosh \
+          --host mongo \
+          --port 27017 \
+          --username "$$app_user" \
+          --password "$$app_password" \
+          --authenticationDatabase "$$APP_DB" \
+          "$$APP_DB" \
+          --quiet \
+          --eval '
+            const status = db.runCommand({
+              connectionStatus: 1
+            });
+
+            const expectedDb = process.env.APP_DB;
+
+            const rolePresent =
+              status.authInfo.authenticatedUserRoles.some(
+                role =>
+                  role.role === "readWrite" &&
+                  role.db === expectedDb
+              );
+
+            if (!rolePresent) {
+              throw new Error(
+                "Application user does not have the expected scoped role."
+              );
+            }
+          '
+
+        echo "rs0 PRIMARY and scoped application user ready"
+
     restart: "no"
+
     networks:
       - data
+
     logging: *default-logging
+
     security_opt:
       - no-new-privileges:true
 
@@ -103,12 +285,13 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+
     image: "app2-backend:${APP_IMAGE_TAG:-local}"
     restart: unless-stopped
 
-    # Exactly one backend process/container is permitted. The image also
-    # starts exactly one Uvicorn worker. Do not scale this service until a
-    # distributed lock or leader-election mechanism is implemented.
+    # Exactly one backend process/container is permitted. The image starts one
+    # Uvicorn worker because scheduler/reconciliation loops lack leader
+    # election. Do not scale this service until that limitation is resolved.
     deploy:
       replicas: 1
 
@@ -118,7 +301,6 @@ services:
 
     environment:
       APP_ENV: production
-      MONGO_URL: "${MONGO_URL:-mongodb://mongo:27017/?replicaSet=rs0}"
       DB_NAME: "${DB_NAME:-medstock}"
       JWT_SECRET: "${JWT_SECRET:?JWT_SECRET must be set in .env.production}"
       COOKIE_SECURE: "${COOKIE_SECURE:-true}"
@@ -131,6 +313,67 @@ services:
       RESEND_API_KEY: "${RESEND_API_KEY:-}"
       SENDER_EMAIL: "${SENDER_EMAIL:-onboarding@resend.dev}"
       APP_URL: "${APP_URL:-}"
+
+    secrets:
+      - source: mongo_app_username
+        target: mongo_app_username
+      - source: mongo_app_password
+        target: mongo_app_password
+
+    # Construct the authenticated URI inside the running container instead of
+    # placing the password in Compose environment metadata. os.execvp replaces
+    # the wrapper with Uvicorn so Uvicorn remains PID 1 and receives SIGTERM.
+    command:
+      - python
+      - -c
+      - |
+        import os
+        from pathlib import Path
+        from urllib.parse import quote
+
+        def read_secret(path: str) -> str:
+            value = Path(path).read_text(encoding="utf-8").strip()
+            if not value:
+                raise RuntimeError(f"Required secret is empty: {path}")
+            return value
+
+        username = quote(
+            read_secret("/run/secrets/mongo_app_username"),
+            safe="",
+        )
+        password = quote(
+            read_secret("/run/secrets/mongo_app_password"),
+            safe="",
+        )
+        db_name_raw = os.environ["DB_NAME"].strip()
+
+        if not db_name_raw:
+            raise RuntimeError("DB_NAME is empty.")
+
+        db_name = quote(db_name_raw, safe="")
+
+        os.environ["MONGO_URL"] = (
+            f"mongodb://{username}:{password}@mongo:27017/{db_name}"
+            f"?authSource={db_name}&replicaSet=rs0"
+        )
+
+        os.execvp(
+            "python",
+            [
+                "python",
+                "-m",
+                "uvicorn",
+                "server:app",
+                "--host",
+                "0.0.0.0",
+                "--port",
+                "8000",
+                "--workers",
+                "1",
+                "--proxy-headers",
+                "--forwarded-allow-ips=*",
+            ],
+        )
 
     networks:
       - application
@@ -148,10 +391,11 @@ services:
       interval: 30s
       timeout: 3s
       retries: 5
-      start_period: 20s
+      start_period: 30s
 
     stop_grace_period: 30s
     logging: *default-logging
+
     security_opt:
       - no-new-privileges:true
 
@@ -160,8 +404,8 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        # Empty at build time produces same-origin requests to /api.
         REACT_APP_BACKEND_URL: ""
+
     image: "app2-frontend:${APP_IMAGE_TAG:-local}"
     restart: unless-stopped
 
@@ -169,9 +413,8 @@ services:
       backend:
         condition: service_healthy
 
-    # Temporary Package 3 ingress. Loopback binding prevents access through
-    # the Docker host's external interfaces. Package 5 replaces this with
-    # the TLS reverse-proxy service and publishes HTTPS only.
+    # Temporary Package 3/4 ingress. Package 5 replaces this loopback HTTP
+    # binding with the TLS reverse-proxy service and publishes HTTPS only.
     ports:
       - "${APP_BIND_ADDRESS:-127.0.0.1}:${APP_HTTP_PORT:-8080}:8080"
 
@@ -192,22 +435,40 @@ services:
 
     stop_grace_period: 15s
     logging: *default-logging
+
     security_opt:
       - no-new-privileges:true
 
 networks:
 
-  # Frontend-to-backend application traffic. No backend host port exists.
   application:
     driver: bridge
 
-  # Backend-to-MongoDB traffic only. The internal flag prevents this network
-  # from providing external connectivity and MongoDB has no published port.
   data:
     driver: bridge
     internal: true
 
 volumes:
 
-  # Package 4 finalizes the authenticated replica-set and persistence design.
   mongo_data:
+    name: "${MONGO_DATA_VOLUME_NAME:-app2-production-mongo-data}"
+
+  mongo_config:
+    name: "${MONGO_CONFIG_VOLUME_NAME:-app2-production-mongo-config}"
+
+secrets:
+
+  mongo_root_username:
+    file: "${MONGO_ROOT_USERNAME_FILE:?MONGO_ROOT_USERNAME_FILE must point to a secret file}"
+
+  mongo_root_password:
+    file: "${MONGO_ROOT_PASSWORD_FILE:?MONGO_ROOT_PASSWORD_FILE must point to a secret file}"
+
+  mongo_app_username:
+    file: "${MONGO_APP_USERNAME_FILE:?MONGO_APP_USERNAME_FILE must point to a secret file}"
+
+  mongo_app_password:
+    file: "${MONGO_APP_PASSWORD_FILE:?MONGO_APP_PASSWORD_FILE must point to a secret file}"
+
+  mongo_replica_set_key:
+    file: "${MONGO_REPLICA_SET_KEY_FILE:?MONGO_REPLICA_SET_KEY_FILE must point to a secret file}"
