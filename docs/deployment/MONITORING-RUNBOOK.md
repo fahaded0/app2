@@ -183,6 +183,30 @@ production.
 
 Package 8 closes control G-14 for local repository readiness after the Section 8
 disposable drill passed and this evidence was committed to the runbook.
-Production monitoring operations remain pending until the approved production
-monitoring schedule, alerting path, escalation channel, retention period, and
-internal CA validation path are recorded.
+Production monitoring operations are approved and recorded in Section 10.
+Implementation of the Windows scheduled task and email notification plumbing
+remains an operational deployment activity.
+
+## 10. Approved production monitoring operations
+
+Approved operating decisions:
+
+| Item | Approved value |
+|---|---|
+| Monitoring scheduler | Windows Task Scheduler every minute |
+| Alerting path | Email |
+| Escalation channel | Nursing Office -> Supply Chain Management -> Internal Audit -> Quality Control -> System Administrator (Owner) |
+| Retention period | 180 days |
+| Internal CA validation path | `C:\ProgramData\app2\certs\hospital-root-ca.crt` |
+
+Operational notes:
+
+- The Windows scheduled task must execute `deploy/scripts/health-check.sh`
+  against the approved production base URL.
+- Routine production monitoring must validate the internal CA chain using the
+  approved CA certificate path.
+- Email alerting must avoid secrets, connection strings, host credentials, and
+  stack traces.
+- Alert evidence and monitoring output must be retained for 180 days.
+- System Administrator (Owner) remains accountable for operation of the
+  monitoring task and escalation completion.
