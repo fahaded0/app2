@@ -123,6 +123,7 @@ docker exec -i \
       --port 27017
       --archive
       --gzip
+      --stopOnError
       --nsInclude "${APP2_SOURCE_DB}.*"
     )
 
@@ -142,9 +143,18 @@ docker exec -i \
       test -s "$APP2_PASSWORD_FILE"
       username="$(cat "$APP2_USERNAME_FILE")"
       password="$(cat "$APP2_PASSWORD_FILE")"
+      auth_config="$(mktemp)"
+      cleanup_auth_config() {
+        rm -f "$auth_config"
+      }
+      trap cleanup_auth_config EXIT
+      yaml_password="${password//\\/\\\\}"
+      yaml_password="${yaml_password//\"/\\\"}"
+      printf "password: \"%s\"\n" "$yaml_password" > "$auth_config"
+      chmod 0600 "$auth_config"
       args+=(
         --username "$username"
-        --password "$password"
+        --config "$auth_config"
         --authenticationDatabase "$APP2_AUTH_DB"
       )
     fi

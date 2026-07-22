@@ -126,7 +126,16 @@ manifest_tmp="${partial_dir}/${prefix}.manifest"
   set -Eeuo pipefail
   root_user="$(cat /run/secrets/mongo_root_username)"
   root_password="$(cat /run/secrets/mongo_root_password)"
-  exec mongodump     --host 127.0.0.1     --port 27017     --username "$root_user"     --password "$root_password"     --authenticationDatabase admin     --readPreference primary     --db "$APP2_BACKUP_DB"     --archive     --gzip
+  auth_config="$(mktemp)"
+  cleanup_auth_config() {
+    rm -f "$auth_config"
+  }
+  trap cleanup_auth_config EXIT
+  yaml_password="${root_password//\\/\\\\}"
+  yaml_password="${yaml_password//\"/\\\"}"
+  printf "password: \"%s\"\n" "$yaml_password" > "$auth_config"
+  chmod 0600 "$auth_config"
+  mongodump     --host 127.0.0.1     --port 27017     --username "$root_user"     --config "$auth_config"     --authenticationDatabase admin     --readPreference primary     --db "$APP2_BACKUP_DB"     --archive     --gzip
 ' > "$archive_tmp"
 
 [[ -s "$archive_tmp" ]] || fail "Backup archive is empty"

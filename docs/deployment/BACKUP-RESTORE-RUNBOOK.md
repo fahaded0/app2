@@ -30,6 +30,9 @@ The backup script:
 7. publishes the files atomically only after every step succeeds.
 
 Credential values are not passed on the host command line or printed.
+`mongodump` and authenticated `mongorestore` receive passwords through temporary
+mode-`0600` YAML files created inside their MongoDB containers with `--config`;
+the files are removed automatically when each tool exits.
 
 ### Consistency requirement
 

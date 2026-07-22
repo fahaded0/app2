@@ -77,7 +77,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-docker run -d --rm --name "$container" "$mongo_image" \
+docker run -d --rm --network none --name "$container" "$mongo_image" \
   --bind_ip_all >/dev/null
 
 ready="false"
