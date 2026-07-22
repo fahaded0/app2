@@ -1,0 +1,21 @@
+[Unit]
+Description=App2 internal production Docker Compose stack
+Documentation=file:/opt/app2/docs/deployment/PRODUCTION-DEPLOYMENT-RUNBOOK.md
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/app2
+Environment=APP2_ENV_FILE=/etc/app2/.env.production
+Environment=APP2_COMPOSE_FILE=/opt/app2/docker-compose.production.yml
+EnvironmentFile=-/etc/app2/app2-service.env
+RemainAfterExit=yes
+ExecStart=/usr/bin/docker compose --env-file ${APP2_ENV_FILE} -f ${APP2_COMPOSE_FILE} up -d --remove-orphans
+ExecStop=/usr/bin/docker compose --env-file ${APP2_ENV_FILE} -f ${APP2_COMPOSE_FILE} down --timeout 60
+TimeoutStartSec=0
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target
