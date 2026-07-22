@@ -435,7 +435,7 @@ services:
           os.setgroups([]);
           os.setgid(10001);
           os.setuid(10001);
-          r = u.urlopen('http://127.0.0.1:8000/api/', timeout=2);
+          r = u.urlopen('http://127.0.0.1:8000/api/readyz', timeout=2);
           sys.exit(0 if r.status == 200 else 1)
       interval: 30s
       timeout: 3s
@@ -618,7 +618,7 @@ services:
           --quiet
           --no-check-certificate
           --spider
-          https://127.0.0.1:8443/healthz
+          https://127.0.0.1:8443/api/readyz
       interval: 30s
       timeout: 5s
       retries: 5

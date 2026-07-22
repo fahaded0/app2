@@ -2462,6 +2462,32 @@ async def root():
     return {"status": "ok", "service": "medical-stock-monitoring"}
 
 
+@api.get("/healthz")
+async def healthz():
+    """Process liveness probe. It intentionally does not depend on MongoDB."""
+    return {"status": "ok", "service": "medical-stock-monitoring"}
+
+
+@api.get("/readyz")
+async def readyz(response: Response):
+    """Dependency-aware readiness probe for traffic and deployment gates."""
+    current_db = db
+    if current_db is None:
+        response.status_code = 503
+        return {"status": "not_ready", "dependencies": {"mongodb": "unavailable"}}
+
+    try:
+        await asyncio.wait_for(current_db.command("ping"), timeout=2.0)
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "Readiness check failed: %s", type(exc).__name__
+        )
+        response.status_code = 503
+        return {"status": "not_ready", "dependencies": {"mongodb": "unavailable"}}
+
+    return {"status": "ready", "dependencies": {"mongodb": "ready"}}
+
+
 app.include_router(api)
 
 
