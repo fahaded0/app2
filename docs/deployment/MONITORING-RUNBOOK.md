@@ -138,17 +138,18 @@ The acceptance drill must demonstrate all of the following:
 
 | Test | Expected result | Evidence |
 |---|---|---|
-| MongoDB available | `/api/healthz` returns `200` | PASSED â€” HTTP `200` |
-| MongoDB available | `/api/readyz` returns `200` | PASSED â€” HTTP `200` |
-| MongoDB stopped deliberately | `/api/healthz` remains `200` | PASSED â€” HTTP `200` |
-| MongoDB stopped deliberately | `/api/readyz` returns `503` | PASSED â€” HTTP `503` |
-| MongoDB stopped deliberately | backend becomes `unhealthy` | PASSED â€” 154 seconds |
-| Failure state | `health-check.sh` exits non-zero | PASSED â€” exit code `1` |
-| MongoDB restarted and ready | readiness returns `200` again | PASSED â€” 31 seconds to recover |
+| MongoDB available | `/api/healthz` returns `200` | PASSED - HTTP `200` |
+| MongoDB available | `/api/readyz` returns `200` | PASSED - HTTP `200` |
+| MongoDB stopped deliberately | `/api/healthz` remains `200` | PASSED - HTTP `200` |
+| MongoDB stopped deliberately | `/api/readyz` returns `503` | PASSED - HTTP `503` |
+| MongoDB stopped deliberately | backend becomes `unhealthy` | PASSED - 154 seconds |
+| Failure state | `health-check.sh` exits non-zero | PASSED - exit code `1` |
+| MongoDB restarted and ready | readiness returns `200` again | PASSED - 31 seconds to recover |
 | Cleanup | disposable containers and volumes removed | PASSED |
 
 Record timestamps, exit codes, Docker health transitions, and recovery duration.
 Never perform this deliberate outage against production.
+
 ### Disposable failure drill evidence
 
 Recorded local disposable validation:
