@@ -1,8 +1,19 @@
 # Production Acceptance Checklist
 
-This file is started by Production Readiness Package 6 and will be finalized
-by Package 10. It records the secrets and environment-hardening evidence and
-the governance decisions that must be signed before production deployment.
+This file is started by Production Readiness Package 6 and finalized by
+Package 10 as the consolidated production sign-off checklist. It records the
+secrets and environment-hardening evidence, remaining blockers, and governance
+decisions that must be signed before production deployment.
+
+## Executive conclusion
+
+**Current conclusion: NOT READY FOR PRODUCTION.**
+
+The repository has completed the infrastructure-readiness packages through
+Package 9, including deployment and rollback automation. However, production
+acceptance remains blocked until target-host values, secrets, internal CA,
+backup destination, monitoring implementation, systemd boot/stop validation,
+QA/UAT closure, and named governance sign-offs are completed.
 
 ## Package 6 status
 
@@ -54,6 +65,22 @@ secret-scanning control.
 - [ ] Confirm that no secret value appears in Compose output, Docker inspect
       metadata, image layers, application logs, tickets, email, or chat.
 
+## Consolidated production blocker register
+
+| ID | Area | Current status | Required closure |
+|---|---|---|---|
+| G-04 | Browser token storage | PENDING SIGN-OFF | Replace localStorage token model in a reviewed app-security package, or obtain named time-bound risk acceptance |
+| G-09 | Backup/restore | REPOSITORY EVIDENCE COMPLETE; OPERATIONS PENDING | Approve off-server destination, schedule, retention, RPO, target-host restore drill, and measured RTO |
+| G-14 | Monitoring | REPOSITORY EVIDENCE COMPLETE; IMPLEMENTATION PENDING | Implement Windows scheduled task, email plumbing, retention, escalation, and first alert test |
+| G-18 | Release/versioning | CLOSED BY PACKAGE 9 | Use explicit tag/full SHA; Package 9 scripts reject moving branch refs |
+| G-19 | Seed credentials | PENDING SIGN-OFF | Confirm seeding prohibited in production/shared UAT, or approve separate generated-credential package |
+| G-24 | QA/UAT evidence | NOT CLOSED | Reconcile failing historical XML reports, close high frontend issue, and complete real UAT walkthrough |
+| OPS-01 | Target-host secrets | PENDING | Generate and access-restrict production secrets on approved host |
+| OPS-02 | Internal CA/TLS | PENDING | Install approved certificate chain and private key; validate client trust path |
+| OPS-03 | systemd boot/stop | PENDING TARGET VM | Validate VM boot starts stack and shutdown stops gracefully |
+| OPS-04 | Server worksheet | PENDING | Complete `SERVER-INFORMATION-WORKSHEET.md` with actual values |
+| OPS-05 | Final sign-off | PENDING | Named role approvals recorded below |
+
 ## G-19 decision: sample seed credentials
 
 **Recommended decision: seeding is prohibited in production and in every
@@ -85,23 +112,45 @@ Package 6 makes no frontend code change.
 - Required follow-up package or risk-acceptance reference: **PENDING**
 - Sign-off date: **PENDING**
 
-## Required sign-offs
+## QA and UAT evidence summary
 
-| Role | Name | Decision | Date |
-|---|---|---|---|
-| System owner | PENDING | PENDING | PENDING |
-| Cybersecurity / Information Security | PENDING | PENDING | PENDING |
-| Infrastructure / Operations | PENDING | PENDING | PENDING |
-| Application owner | PENDING | PENDING | PENDING |
+Existing historical reports were reviewed during Package 10.
 
-## Package 6 closure rule
+| Evidence | Result | Production interpretation |
+|---|---|---|
+| `iteration_1.json` | 24/25 backend after fix; lockout bug and UX issues noted | Not final production evidence |
+| `iteration_2.json` | JSON says Phase 2 complete | Must reconcile with XML failures/errors |
+| `iteration_3.json` | 22/22 backend; minor preview issue | Acceptable only with minor issue disposition |
+| `iteration_4.json` | 23/23 Phase 4 and 22/22 Phase 3; high BarcodeScanner issue | Production blocker until fixed or risk-accepted |
+| `pytest/phase2_results.xml` | tests=20, failures=1, errors=2 | Not pass |
+| `pytest/phase3_results.xml` | tests=22, failures=0, errors=0 | Pass |
+| `pytest/phase4_results.xml` | tests=23, failures=0, errors=0 | Pass |
+| `pytest/pytest_results.xml` | tests=25, failures=2, errors=0 | Not pass |
 
-Package 6 may be closed only when:
+Conclusion: G-24 is not closed until a fresh target-environment UAT/test record
+supersedes the failing historical XML reports and disposes of the high
+BarcodeScanner issue.
 
-1. the target-host production secrets have been generated and access-restricted;
-2. the repository-history findings remain triaged with no unresolved real
-   secret;
-3. G-04 and G-19 have signed decisions with named owners;
-4. any required follow-up code package or time-bound risk acceptance is
-   recorded; and
-5. no production secret value has been committed, staged, printed, or pushed.
+## Required production sign-offs
+
+| Role | Name | Decision | Date | Required scope |
+|---|---|---|---|---|
+| System owner | PENDING | PENDING | PENDING | Overall production acceptance |
+| Cybersecurity / Information Security | PENDING | PENDING | PENDING | G-04, G-19, secrets, TLS, access controls |
+| Infrastructure / Operations | PENDING | PENDING | PENDING | VM, Docker, systemd, monitoring, backup |
+| Application owner | PENDING | PENDING | PENDING | Functional UAT and application risk |
+| Quality / Internal Audit | PENDING | PENDING | PENDING | QA evidence and production blocker disposition |
+
+## Final production acceptance rule
+
+Production deployment is not approved until:
+
+1. every row in the consolidated production blocker register is closed or
+   explicitly risk-accepted by a named owner;
+2. the server information worksheet is completed with actual target-host values;
+3. production secrets and TLS materials are generated and access-restricted on
+   the approved target host;
+4. backup, restore, monitoring, and alerting are operationally implemented;
+5. systemd boot and graceful stop are validated on the target VM;
+6. UAT is completed and signed; and
+7. no production secret value has been committed, staged, printed, or pushed.
