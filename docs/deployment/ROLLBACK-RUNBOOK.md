@@ -85,3 +85,17 @@ service environment file when configured.
 
 Rollback automation is not considered production-accepted until a successful
 bad-update rollback drill is recorded in this runbook.
+
+## Package 9 Disposable Rollback Drill Evidence - 2026-07-23
+
+- Result: PASSED.
+- Baseline deploy from explicit release: PASSED.
+- Moving branch rejection for main: PASSED.
+- Update from explicit release after backup: PASSED.
+- Deliberate bad update health-gate failure: PASSED.
+- Rollback restored previous release commit 614a15b47651140316f12d70ccdb1dfe53f14f56.
+- Post-rollback /api/healthz: PASSED.
+- Post-rollback /api/readyz: PASSED.
+- Release state after rollback: PASSED.
+- Disposable resources removed: PASSED.
+- Target VM systemd boot/stop validation: PENDING TARGET VM.

@@ -127,3 +127,21 @@ is executed and recorded in the rollback runbook.
 
 Target-host production acceptance remains pending until the systemd boot and
 graceful-stop behavior is validated on the approved Linux VM.
+
+## Package 9 Disposable Drill Evidence - 2026-07-23
+
+- Result: PASSED.
+- Project: app2-pkg9-1740931066.
+- HTTPS port: 23698.
+- Base release: pkg9-drill-base / 07ad7e3e08d382fc266b824b30e35ae58930ffc8.
+- Good update release: pkg9-drill-good / 614a15b47651140316f12d70ccdb1dfe53f14f56.
+- Deliberate bad release: cbf768528b4350e809b40d55cc84e0743783c1ef.
+- Moving branch rejection: PASSED.
+- Baseline deploy: PASSED.
+- Pre-update backup: PASSED, 1 archive file.
+- Good update: PASSED.
+- Bad update health-gate failure: PASSED.
+- Rollback to previous release: PASSED.
+- Post-rollback liveness/readiness/application health: PASSED.
+- systemd unit static review: PASSED.
+- Target VM systemd boot/stop validation: PENDING TARGET VM.
